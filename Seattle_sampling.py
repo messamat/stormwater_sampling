@@ -17,23 +17,39 @@ else:
     arcpy.CreateFileGDB_management(path.join(rootdir,'results'), 'Seattle_sampling.gdb')
 arcpy.env.workspace = gdb
 
+########################################################################################################################
+# GET TRAFFIC COUNT FOR EVERY ROAD SEGMENT IN SEATTLE
+########################################################################################################################
 #Check for common fields between Seattle streets dataset and traffic_count dataset
 roads_fields = [f.name for f in arcpy.ListFields(roads)]
 traffic_fields = [f2.name for f2 in arcpy.ListFields(traffic_seattle)]
 list(set(roads_fields).intersection(traffic_fields))
 
 #Project datasets
+print('Project datasets')
 UTM10 = arcpy.SpatialReference(26910)
 arcpy.Project_management(roads, 'roads_proj', out_coor_system=UTM10)
 arcpy.Project_management(traffic_seattle, 'traffic_proj', out_coor_system=UTM10)
 
-#Split roads so that each block is a separate line
-arcpy.FeatureToLine_management('roads_proj', 'roads_split')
-
 #Join Seattle traffic data to street data
+print('Join Seattle traffic data to street data')
 roadstraffic = 'Seattle_roadstraffic'
-arcpy.SpatialJoin_analysis('roads_split', 'traffic_proj', roadstraffic, join_operation='JOIN_ONE_TO_ONE',
-                           join_type='KEEP_ALL', match_option='HAVE_THEIR_CENTER_IN', search_radius='5 meters')
+arcpy.SpatialJoin_analysis('roads_proj', 'traffic_proj', roadstraffic, join_operation='JOIN_ONE_TO_ONE',
+                           join_type='KEEP_ALL', match_option='HAVE_THEIR_CENTER_IN', search_radius='2 meters')
+
+#Get rid of erroneous matches at intersections between highways and arterials
+print('Get rid of erroneous matches')
+traffic_fields = [f.name for f in arcpy.ListFields('Seattle_roadstraffic')][39:]
+traffic_fields.insert(0,'ARTDESCRIP')
+traffic_fields.insert(1,'FIRST_ARTD')
+with arcpy.da.UpdateCursor(roadstraffic,traffic_fields) as cursor:
+    for row in cursor:
+        if row[1] is not None and row[0] != row[1]:
+            row[2:len(traffic_fields)] = np.repeat(None, len(traffic_fields)-2)
+        cursor.updateRow(row)
+
+#Create unique ID field to help in joining
+print('Create CUSTOM_ID')
 arcpy.AddField_management(roadstraffic, 'CUSTOM_ID', 'LONG')
 with arcpy.da.UpdateCursor(roadstraffic, ['CUSTOM_ID']) as cursor:
     x=0
@@ -44,6 +60,7 @@ with arcpy.da.UpdateCursor(roadstraffic, ['CUSTOM_ID']) as cursor:
 
 ###################################################################################
 #Join WSDOT traffic data to Seattle streets
+print('Join WSDOT traffic data to Seattle streets')
 arcpy.SpatialJoin_analysis(traffic_wsdot, roadstraffic, 'WSDOT_streets_join', 'JOIN_ONE_TO_ONE', 'KEEP_COMMON',
                            match_option='CLOSEST_GEODESIC', search_radius='50 meters', distance_field_name='joindist')
 arcpy.Dissolve_management('WSDOT_streets_join', 'WSDOT_streets_join_diss', dissolve_field='CUSTOM_ID',
@@ -52,6 +69,7 @@ arcpy.JoinField_management(roadstraffic, 'CUSTOM_ID', 'WSDOT_streets_join_diss',
 #Not a big deal if the match isn't perfect as the final output will be rasterized
 
 #Average between WSDOT and Seattle estimates
+print('Compute average between WSDOT and Seattle estimates')
 arcpy.AddField_management(roadstraffic, 'AADT_avg', 'DOUBLE')
 [f.name for f in arcpy.ListFields(roadstraffic)]
 arcpy.CalculateField_management(roadstraffic, 'AADT_avg', '!MEAN_AADT!', expression_type='PYTHON')
@@ -66,6 +84,7 @@ arcpy.CopyFeatures_management('roadstraffic_lyr', roadstraffic_avg)
 arcpy.Delete_management('roadstraffic_lyr')
 
 #Interpolate for designated lines
+print('Interpolate AADT values along roads based on inverse distance weighting along lines')
 arcpy.MakeFeatureLayer_management(roadstraffic_avg, 'roadstraffic_lyr')
 arcpy.SelectLayerByAttribute_management('roadstraffic_lyr', 'NEW_SELECTION',
                                         "NOT (ARTDESCRIP = ' ' OR ARTDESCRIP = 'Not Designated')")
@@ -101,14 +120,14 @@ with arcpy.da.UpdateCursor('routes_loc', ['CUSTOM_ID','STNAME_ORD','FMEAS', 'ART
                                     interpdicminus[rowOuter[0]] = [-fdif,rowInner[4]]  # Then write [distance, AADT]
                             except:
                                 interpdicminus[rowOuter[0]] = [-fdif, rowInner[4]] #If no record was in dic for that segment, then write [distance, AADT]
-
             #Interpolate AADT
-            if type(interpdicplus) is list and type(interpdicminus) is list and interpdicplus != [] and interpdicminus != []: #If segments with AADT both up and down
+            #if type(interpdicplus) is list and type(interpdicminus) is list:
+            if interpdicplus[rowOuter[0]] != [] and interpdicminus[rowOuter[0]] != []: #If segments with AADT both up and down
                 # Compute inverse distance weighted average of AADT
-                rowOuter[5] = (interpdicplus[rowOuter[0]][0]/interpdicplus[rowOuter[0]][1])+(interpdicminus[rowOuter[0]][0]/interpdicminus[rowOuter[0]][1])/\
-                                (1/interpdicplus[rowOuter[0]][1]+1/interpdicminus[rowOuter[0]][1])
-            else: #If not, assign the value of the nearest segment up or down the road
-                try:
+                rowOuter[5] = (interpdicplus[rowOuter[0]][1]/interpdicplus[rowOuter[0]][0])+(interpdicminus[rowOuter[0]][1]/interpdicminus[rowOuter[0]][0])/\
+                                (1/interpdicplus[rowOuter[0]][0]+1/interpdicminus[rowOuter[0]][0])
+            else:
+                try: #If not, assign the value of the nearest segment up or down the road
                     rowOuter[5] = interpdicplus[rowOuter[0]][1]
                 except:
                     try:
@@ -121,22 +140,24 @@ with arcpy.da.UpdateCursor('routes_loc', ['CUSTOM_ID','STNAME_ORD','FMEAS', 'ART
 #Fill in AADT interpolation for remaining arterial roads
 #-----------------------------------------------------------------------------------------------------------------------
 #Compute average AADT on freeway ramps
+print('Compute averafe AADT on freeway ramps')
 arcpy.MakeFeatureLayer_management(roadstraffic_avg, 'roadstraffic_lyr')
 arcpy.SelectLayerByAttribute_management('roadstraffic_lyr', 'NEW_SELECTION', where_clause="STNAME_ORD LIKE '% RP'")
 RP_ADDT=np.median([int(round(row[0])) for row in arcpy.da.SearchCursor('roadstraffic_lyr', 'AADT_avg') if row[0] is not None])
 arcpy.Delete_management('roadstraffic_lyr')
 
 #Compute median AADT by road type
+print('Compute median AADT by road type')
 arcpy.MakeFeatureLayer_management(roadstraffic_avg, 'roadstraffic_lyr')
 arcpy.SelectLayerByAttribute_management('roadstraffic_lyr', 'NEW_SELECTION','NOT AADT_avg IS NULL')
 statdic = defaultdict(list)
 for row in arcpy.da.SearchCursor('roadstraffic_lyr', ['ARTDESCRIP','AADT_avg']): #Get dictionary of key: road type, value: AADT
     statdic[row[0]].append(int(round(row[1])))
-np.median(statdic.values())
 for k, v in statdic.iteritems(): #For each road type, compute median AADT
     statdic[k] = np.median(v)
 
 #Fill AADT interpolation for remaining arterial roads
+print('Fill AADT interpolation for remaining arterial roads')
 with arcpy.da.UpdateCursor('routes_loc', ['STNAME_ORD','ARTDESCRIP','AADT_avg','AADT_interp','CUSTOM_ID']) as cursor:
     for row in cursor:
         if row[2] is None and row[3] is None:
@@ -156,3 +177,22 @@ with arcpy.da.UpdateCursor('routes_loc', ['STNAME_ORD','ARTDESCRIP','AADT_avg','
             row[3] = row[2]
         cursor.updateRow(row)
 
+#For all non-arterial roads that do not already have an AADT value, assign 1000
+arcpy.JoinField_management(roadstraffic_avg, 'CUSTOM_ID', 'routes_loc', 'CUSTOM_ID', 'AADT_interp')
+with arcpy.da.UpdateCursor(roadstraffic_avg, ['ARTDESCRIP','AADT_avg','AADT_interp']) as cursor:
+    for row in cursor:
+        if row[1] is not None:
+            row[2] = row[1]
+        if row[1] is None and row[2] is None and row[0] in ['','Not Designated']:
+            row[2]=1000
+        cursor.updateRow(row)
+
+
+
+
+
+########################################################################################################################
+# CREATE HEATMAPS OF SPEEDLIMIT AND AADT
+########################################################################################################################
+res = arcpy.Describe(file.path(rootdir,'results/bing/180620_09_30_class_mlc.tif')).cellSize
+arcpy.FeatureToRaster_conversion(roadstraffic_avg, field='AADT_interp', out_raster='Seattle_AADT', )
