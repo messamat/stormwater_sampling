@@ -1,14 +1,19 @@
 import arcpy
+from arcpy.sa import *
 from os import *
 import numpy as np
 from collections import defaultdict
 
-rootdir = 'C:/Mathis/ICSL/stormwater/'
+arcpy.CheckOutExtension("Spatial")
 arcpy.env.overwriteOutput=True
+
+#Set up paths
+rootdir = 'C:/Mathis/ICSL/stormwater/'
 
 roads = path.join(rootdir, 'data/CitySeattle_20180601/Seattle_Streets/Seattle_Streets.shp')
 traffic_seattle = path.join(rootdir, 'data/CitySeattle_20180601/2016_Traffic_Flow_Counts/2016_Traffic_Flow_Counts.shp')
 traffic_wsdot = path.join(rootdir, 'data/WSDOT_TPTTraffic_20180508/2016_TrafficCounts/2016TrafficCounts.gdb/TrafficCounts2016')
+trees = path.join(rootdir, 'data/CitySeattle_20180601/Trees/Trees.shp')
 
 gdb = path.join(rootdir,'results/Seattle_sampling.gdb')
 if arcpy.Exists(gdb):
@@ -16,6 +21,11 @@ if arcpy.Exists(gdb):
 else:
     arcpy.CreateFileGDB_management(path.join(rootdir,'results'), 'Seattle_sampling.gdb')
 arcpy.env.workspace = gdb
+
+#New variables
+roadstraffic = 'Seattle_roadstraffic'
+roadstraffic_avg =roadstraffic+'_AADT'
+UTM10 = arcpy.SpatialReference(26910)
 
 ########################################################################################################################
 # GET TRAFFIC COUNT FOR EVERY ROAD SEGMENT IN SEATTLE
@@ -27,13 +37,11 @@ list(set(roads_fields).intersection(traffic_fields))
 
 #Project datasets
 print('Project datasets')
-UTM10 = arcpy.SpatialReference(26910)
 arcpy.Project_management(roads, 'roads_proj', out_coor_system=UTM10)
 arcpy.Project_management(traffic_seattle, 'traffic_proj', out_coor_system=UTM10)
 
 #Join Seattle traffic data to street data
 print('Join Seattle traffic data to street data')
-roadstraffic = 'Seattle_roadstraffic'
 arcpy.SpatialJoin_analysis('roads_proj', 'traffic_proj', roadstraffic, join_operation='JOIN_ONE_TO_ONE',
                            join_type='KEEP_ALL', match_option='HAVE_THEIR_CENTER_IN', search_radius='2 meters')
 
@@ -79,7 +87,6 @@ arcpy.CalculateField_management('roadstraffic_lyr', 'AADT_avg', '(float(!COUNTAA
 arcpy.SelectLayerByAttribute_management('roadstraffic_lyr', 'NEW_SELECTION', "MEAN_AADT IS NULL AND NOT COUNTAAWDT IS NULL")
 arcpy.CalculateField_management('roadstraffic_lyr', 'AADT_avg', expression='float(!COUNTAAWDT!)', expression_type='PYTHON')
 arcpy.SelectLayerByAttribute_management('roadstraffic_lyr', 'CLEAR_SELECTION')
-roadstraffic_avg =roadstraffic+'_AADT'
 arcpy.CopyFeatures_management('roadstraffic_lyr', roadstraffic_avg)
 arcpy.Delete_management('roadstraffic_lyr')
 
@@ -187,12 +194,48 @@ with arcpy.da.UpdateCursor(roadstraffic_avg, ['ARTDESCRIP','AADT_avg','AADT_inte
             row[2]=1000
         cursor.updateRow(row)
 
-
-
-
-
 ########################################################################################################################
 # CREATE HEATMAPS OF SPEEDLIMIT AND AADT
 ########################################################################################################################
-res = arcpy.Describe(file.path(rootdir,'results/bing/180620_09_30_class_mlc.tif')).cellSize
-arcpy.FeatureToRaster_conversion(roadstraffic_avg, field='AADT_interp', out_raster='Seattle_AADT', )
+res = arcpy.GetRasterProperties_management(path.join(rootdir,'results/bing/180620_09_30_class_mlc.tif'), 'CELLSIZEX')
+kernel = NbrWeight('C:/Mathis/ICSL/stormwater/results/logkernell00.txt')
+#SPEED LIMIT
+arcpy.PolylineToRaster_conversion(roadstraffic_avg, value_field='SPEEDLIMIT', out_rasterdataset='Seattle_spdlm', priority_field='SPEEDLIMIT',cellsize=res)
+heat_spdlm = FocalStatistics(path.join(gdb,'Seattle_spdlm'), neighborhood=NbrWeight('C:/Mathis/ICSL/stormwater/results/logkernel100.txt'), statistics_type='SUM', ignore_nodata='DATA')
+heat_spdlm.save('heat_spdlm')
+heat_spdlm_int = Int(Raster('heat_spdlm')+0.5) #Constantly result in overall python crash?
+heat_spdlm_int.save('heat_spdlm_int')
+
+#AADT
+arcpy.PolylineToRaster_conversion(roadstraffic_avg, value_field='AADT_interp', out_rasterdataset='Seattle_AADT', priority_field='AADT_interp',cellsize=res)
+heat_aadt = FocalStatistics(path.join(gdb,'Seattle_AADT'), neighborhood=kernel, statistics_type='SUM', ignore_nodata='DATA')
+heat_aadt.save('heat_AADT')
+heat_aadt_int = Int(Raster('heat_AADT'+0.5))
+heat_aadt_int.save('heat_aadt_int')
+
+#Get overall distribution of values in rasters
+arcpy.BuildRasterAttributeTable_management('heat_AADT_int')
+arcpy.BuildRasterAttributeTable_management('heat_spdlm_int')
+arcpy.CopyRows_management('heat_AADT_int',  path.join(rootdir, 'results/heat_AADT.dbf'))
+arcpy.CopyRows_management('heat_spdlm_int',  path.join(rootdir, 'results/heat_spdlm.dbf'))
+
+########################################################################################################################
+# GET BIG LEAF MAPLE VALUES
+########################################################################################################################
+#Subset only big leaf maples
+arcpy.MakeFeatureLayer_management(trees, 'trees_lyr')
+arcpy.SelectLayerByAttribute_management('trees_lyr', 'NEW_SELECTION', "SCIENTIFIC = 'Acer macrophyllum'")
+#Project
+arcpy.Project_management('trees_lyr', 'BLMtrees', UTM10)
+#Get table of heatmap values for each big leaf maple
+ExtractMultiValuesToPoints('BLMtrees', ['heat_AADT','heat_spdlm'], bilinear_interpolate_values='BILINEAR')
+arcpy.CopyRows_management('BLMtrees', path.join(rootdir, 'results/BLMtrees_tab.dbf'))
+
+#Subset only Norway Maple
+arcpy.MakeFeatureLayer_management(trees, 'trees_lyr')
+arcpy.SelectLayerByAttribute_management('trees_lyr', 'NEW_SELECTION', "SCIENTIFIC LIKE 'Acer platanoides%'")
+#Project
+arcpy.Project_management('trees_lyr', 'NMtrees', UTM10)
+#Get table of heatmap values for each big leaf maple
+ExtractMultiValuesToPoints('NMtrees', ['heat_AADT','heat_spdlm'], bilinear_interpolate_values='BILINEAR')
+arcpy.CopyRows_management('NMtrees', path.join(rootdir, 'results/NMtrees_tab.dbf'))
