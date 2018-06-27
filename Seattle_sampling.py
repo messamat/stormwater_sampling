@@ -1,3 +1,7 @@
+#Author: Mathis Messager
+#Purpose: create a heuristic model of traffic-related heavy metal pollution to select maple trees on which to sample moss
+# in the city of Seattle, WA
+
 import arcpy
 from arcpy.sa import *
 from os import *
@@ -29,7 +33,13 @@ UTM10 = arcpy.SpatialReference(26910)
 
 ########################################################################################################################
 # GET TRAFFIC COUNT FOR EVERY ROAD SEGMENT IN SEATTLE
-########################################################################################################################
+#   Average Annual Daily Traffic (AADT) is available for most arterial streets in the city of Seattle (here for 2016).
+#   However, there is no common street identifier between the AADT dataset and the broader street dataset
+#   of the city of Seattle. Therefore, spatially join the AADT dataset and the City of Seattle general street dataset.
+#   Note that:
+#   1. AADT segments are larger than City of Seattle streets, hence no need to split the street dataset.
+#   2. Here average week day traffic is used as it has a fuller coverage of streets.
+
 #Check for common fields between Seattle streets dataset and traffic_count dataset
 roads_fields = [f.name for f in arcpy.ListFields(roads)]
 traffic_fields = [f2.name for f2 in arcpy.ListFields(traffic_seattle)]
@@ -66,7 +76,13 @@ with arcpy.da.UpdateCursor(roadstraffic, ['CUSTOM_ID']) as cursor:
         cursor.updateRow(row)
         x=x+1
 
-###################################################################################
+#-----------------------------------------------------------------------------------------------------------------------
+# JOIN DATA SOURCES
+# The Seattle AADT dataset does not include data for state highways. The Washington State Department of Transportation,
+#   on the other hand, has point AADT data for most highways and several arterials.
+#   Here, we spatially join WSDOT point data to the closest Seattle street segment dataset
+#-----------------------------------------------------------------------------------------------------------------------
+
 #Join WSDOT traffic data to Seattle streets
 print('Join WSDOT traffic data to Seattle streets')
 arcpy.SpatialJoin_analysis(traffic_wsdot, roadstraffic, 'WSDOT_streets_join', 'JOIN_ONE_TO_ONE', 'KEEP_COMMON',
@@ -76,7 +92,7 @@ arcpy.Dissolve_management('WSDOT_streets_join', 'WSDOT_streets_join_diss', disso
 arcpy.JoinField_management(roadstraffic, 'CUSTOM_ID', 'WSDOT_streets_join_diss', 'CUSTOM_ID', ['MEAN_joindist','MEAN_AADT', 'SUM_Join_Count'])
 #Not a big deal if the match isn't perfect as the final output will be rasterized
 
-#Average between WSDOT and Seattle estimates
+#Average between WSDOT and Seattle estimates (as some roads have AADT estimates from both sources)
 print('Compute average between WSDOT and Seattle estimates')
 arcpy.AddField_management(roadstraffic, 'AADT_avg', 'DOUBLE')
 [f.name for f in arcpy.ListFields(roadstraffic)]
@@ -89,6 +105,12 @@ arcpy.CalculateField_management('roadstraffic_lyr', 'AADT_avg', expression='floa
 arcpy.SelectLayerByAttribute_management('roadstraffic_lyr', 'CLEAR_SELECTION')
 arcpy.CopyFeatures_management('roadstraffic_lyr', roadstraffic_avg)
 arcpy.Delete_management('roadstraffic_lyr')
+
+#-----------------------------------------------------------------------------------------------------------------------
+# INTERPOLATE
+#   After joining the two sources, AADT values are interpolated for missing segments based on linear inverse distance
+#   weighting from road segments with the same name.
+#-----------------------------------------------------------------------------------------------------------------------
 
 #Interpolate for designated lines
 print('Interpolate AADT values along roads based on inverse distance weighting along lines')
@@ -144,8 +166,12 @@ with arcpy.da.UpdateCursor('routes_loc', ['CUSTOM_ID','STNAME_ORD','FMEAS', 'ART
             cursorOuter.updateRow(rowOuter)
 
 #-----------------------------------------------------------------------------------------------------------------------
-#Fill in AADT interpolation for remaining arterial roads
+#Fill in AADT interpolation for remaining roads and correct erroneous values
+#For freeway ramps, get the city-wide median AADT for freeway ramps
+#For arterial roads with no AADT estimates, get the city-wide median AADT for their given road type (minor vs major arterial, etc.
+#For all non-arterial roads with no estimates, assign AADT of 1000
 #-----------------------------------------------------------------------------------------------------------------------
+
 #Compute average AADT on freeway ramps
 print('Compute averafe AADT on freeway ramps')
 arcpy.MakeFeatureLayer_management(roadstraffic_avg, 'roadstraffic_lyr')
@@ -194,8 +220,15 @@ with arcpy.da.UpdateCursor(roadstraffic_avg, ['ARTDESCRIP','AADT_avg','AADT_inte
             row[2]=1000
         cursor.updateRow(row)
 
+#Write out individual roads' attributes
+arcpy.CopyRows_management(roadstraffic_avg, path.join(rootdir, 'results/Seattle_roads.dbf'))
+
+########################################################################################################################
+
 ########################################################################################################################
 # CREATE HEATMAPS OF SPEEDLIMIT AND AADT
+# Use a logarithmic decay function to 'simulate' the pollution spread of various levels of traffic volume, speed,
+# and congestion
 ########################################################################################################################
 res = arcpy.GetRasterProperties_management(path.join(rootdir,'results/bing/180620_09_30_class_mlc.tif'), 'CELLSIZEX')
 kernel = NbrWeight('C:/Mathis/ICSL/stormwater/results/logkernell00.txt')
@@ -220,7 +253,9 @@ arcpy.CopyRows_management('heat_AADT_int',  path.join(rootdir, 'results/heat_AAD
 arcpy.CopyRows_management('heat_spdlm_int',  path.join(rootdir, 'results/heat_spdlm.dbf'))
 
 ########################################################################################################################
-# GET BIG LEAF MAPLE VALUES
+# GET MAPLE TREES HEATMAP VALUES
+# Select candidate species of trees from the City of Seattle's street-tree dataset and extract heatmap values at their
+# location
 ########################################################################################################################
 #Subset only big leaf maples
 arcpy.MakeFeatureLayer_management(trees, 'trees_lyr')
