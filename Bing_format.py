@@ -26,11 +26,12 @@ for f in clasfiles:
     if arcpy.Exists(outf):
         print('{} already exists'.format(outf))
     else:
-        outReclass = Reclassify(clasfiles[0], 'Value', remap, "DATA")
+        outReclass = Reclassify(f, 'Value', remap, "DATA")
         outReclass.save(outf)
     print(time.time() - t0)
 
-#Compute statistics across time
+#Compute statistics across time (30 min for 19 rasters, expect ~4-5h for )
+mlclist = [filenames for (dirpath, dirnames, filenames) in walk(res)][0]
 regex=re.compile(".+reclass\.tif$")
 reclasfiles = [m.group(0) for l in mlclist for m in [regex.search(l)] if m] #Look into this
 t0 = time.time()
