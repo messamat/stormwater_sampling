@@ -18,6 +18,8 @@ roads = path.join(rootdir, 'data/CitySeattle_20180601/Seattle_Streets/Seattle_St
 traffic_seattle = path.join(rootdir, 'data/CitySeattle_20180601/2016_Traffic_Flow_Counts/2016_Traffic_Flow_Counts.shp')
 traffic_wsdot = path.join(rootdir, 'data/WSDOT_TPTTraffic_20180508/2016_TrafficCounts/2016TrafficCounts.gdb/TrafficCounts2016')
 trees = path.join(rootdir, 'data/CitySeattle_20180601/Trees/Trees.shp')
+zoning = path.join(rootdir, 'data/CitySeattle_20180626/City_of_Seattle_Zoning/WGS84/City_of_Seattle_Zoning.shp')
+censustract = path.join(rootdir, 'data/TIGER2017/Profile-County_Tract/Profile-County_Tract.gdb/Tract_2010Census_DP1')
 
 gdb = path.join(rootdir,'results/Seattle_sampling.gdb')
 if arcpy.Exists(gdb):
@@ -253,24 +255,19 @@ arcpy.CopyRows_management('heat_AADT_int',  path.join(rootdir, 'results/heat_AAD
 arcpy.CopyRows_management('heat_spdlm_int',  path.join(rootdir, 'results/heat_spdlm.dbf'))
 
 ########################################################################################################################
-# GET MAPLE TREES HEATMAP VALUES
+# GET TREES HEATMAP VALUES
 # Select candidate species of trees from the City of Seattle's street-tree dataset and extract heatmap values at their
 # location
 ########################################################################################################################
-#Subset only big leaf maples
-arcpy.MakeFeatureLayer_management(trees, 'trees_lyr')
-arcpy.SelectLayerByAttribute_management('trees_lyr', 'NEW_SELECTION', "SCIENTIFIC = 'Acer macrophyllum'")
 #Project
-arcpy.Project_management('trees_lyr', 'BLMtrees', UTM10)
-#Get table of heatmap values for each big leaf maple
-ExtractMultiValuesToPoints('BLMtrees', ['heat_AADT','heat_spdlm'], bilinear_interpolate_values='BILINEAR')
-arcpy.CopyRows_management('BLMtrees', path.join(rootdir, 'results/BLMtrees_tab.dbf'))
-
-#Subset only Norway Maple
-arcpy.MakeFeatureLayer_management(trees, 'trees_lyr')
-arcpy.SelectLayerByAttribute_management('trees_lyr', 'NEW_SELECTION', "SCIENTIFIC LIKE 'Acer platanoides%'")
-#Project
-arcpy.Project_management('trees_lyr', 'NMtrees', UTM10)
-#Get table of heatmap values for each big leaf maple
-ExtractMultiValuesToPoints('NMtrees', ['heat_AADT','heat_spdlm'], bilinear_interpolate_values='BILINEAR')
-arcpy.CopyRows_management('NMtrees', path.join(rootdir, 'results/NMtrees_tab.dbf'))
+arcpy.Project_management(trees, 'trees_proj', UTM10)
+#Get values
+ExtractMultiValuesToPoints('trees_proj', ['heat_AADT','heat_spdlm'], bilinear_interpolate_values='BILINEAR')
+#Get zoning
+arcpy.Project_management(zoning, 'zoning_proj', UTM10)
+arcpy.SpatialJoin_analysis('trees_proj', 'zoning_proj', 'trees_zoning', join_operation='JOIN_ONE_TO_ONE', match_option='WITHIN')
+#Get census data
+arcpy.Project_management(censustract, 'Tract_2010Census_proj', UTM10)
+arcpy.SpatialJoin_analysis('trees_zoning', 'Tract_2010Census_proj', 'trees_zoning_census', join_operation='JOIN_ONE_TO_ONE', match_option='WITHIN')
+#Export table
+arcpy.CopyRows_management('trees_zoning_census', out_table=path.join(rootdir, 'results/trees_tab.dbf'))
