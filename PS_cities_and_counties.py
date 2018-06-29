@@ -1,9 +1,12 @@
 import arcpy
-import imp
+from arcpy.sa import *
+import numpy as np
 from os import *
+
 rootdir = 'C:/Mathis/ICSL/stormwater/'
 resdir  = path.join(rootdir,'results')
 arcpy.env.workspace = resdir
+arcpy.CheckOutExtension("Spatial")
 arcpy.env.overwriteOutput = True
 
 wa_wtshd = path.join(rootdir, 'data/NOAA_ERMA_20180601/PSwatersheds/shapefile_4047.shp')
@@ -12,6 +15,9 @@ OSMroads = path.join(rootdir, 'data/OSM_WA_20180601/gis_osm_roads_free_1.shp')
 Kingroads = path.join(rootdir, 'data/King_201806\Metro_Transportation_Network_TNET_in_King_County_for_Car_Mode__trans_network_car_line\Metro_Transportation_Network_TNET_in_King_County_for_Car_Mode__trans_network_car_line.shp')
 Pierceroads = path.join(rootdir, 'data/Pierce_20180611/Mobility_Data/Mobility_Data.shp')
 counties = path.join(rootdir, 'data/TIGER2017/cb_2017_us_county_500k/cb_2017_us_county_500k.shp')
+
+kernel = NbrWeight('C:/Mathis/ICSL/stormwater/results/logkernell00.txt') #UPDATE
+UTM10 = arcpy.SpatialReference(26910)
 
 #Subset puget sound watersheds
 arcpy.MakeFeatureLayer_management(wa_wtshd, out_layer='wtshd_lyr')
@@ -23,18 +29,17 @@ arcpy.Delete_management('wtshd_lyr')
 arcpy.Dissolve_management('PSwtshd.shp', 'PSwtshd_dissolve.shp')
 
 #Erase non-terrestrial areas from Puget Sound polygon
-proj = arcpy.Describe(wa_wtshd).spatialReference
-arcpy.Project_management(USland, 'USA_adm_proj.shp', out_coor_system=proj)
+#proj = arcpy.Describe(wa_wtshd).spatialReference
+arcpy.Project_management(USland, 'USA_adm_proj.shp', out_coor_system=UTM10)
 arcpy.env.extent = arcpy.Describe(wa_wtshd).extent
 arcpy.Buffer_analysis('USA_adm_proj.shp', out_feature_class='USbuf.shp', buffer_distance_or_field='100 meters')
 arcpy.Intersect_analysis(in_features=['PSwtshd_dissolve.shp',USland], out_feature_class='PSwtshd_extrude')
 
 #Intersect Puget Sound with road network from OSM
 arcpy.MakeFeatureLayer_management(OSMroads, 'OSMroads_lyr')
-#Do not include service streets as generally no through traffic, also exludes tracks as mainly used for forestry and agricultural purpose
-sel = "{0} = 'motorway' OR {0} = 'motorway_link' OR {0} = 'living_street' OR {0} = 'primary' OR {0} = 'primary_link' OR \
-{0} = 'residential' OR {0} = 'secondary' OR {0} = 'secondary_link' OR {0} = 'tertiary' OR \
-{0} = 'tertiary_link' OR {0} = 'trunk' OR {0} = 'trunk_link' OR {0} = 'unclassified' OR {0} = 'unknown'".format('"fclass"')
+#Do not include service streets as generally not enough through-traffic to be on Bing map, also excludes tracks as mainly used for forestry and agricultural purpose
+sel = "{} IN ('motorway','motorway_link','living_street','primary','primary_link','residential','secondary','secondary_link'," \
+      "'tertiary','tertiary_link','trunk','trunk_link','unclassified','unknown')".format('"fclass"')
 arcpy.SelectLayerByAttribute_management('OSMroads_lyr', 'NEW_SELECTION', sel)
 PSOSM='PSwtshd_OSMroads.shp'
 arcpy.Intersect_analysis(['OSMroads_lyr', 'PSwtshd_dissolve.shp'],out_feature_class=PSOSM)
@@ -133,3 +138,48 @@ arcpy.JoinField_management(out_fc, "JOIN_FID", join_features, arcpy.Describe(joi
 
 # Need to know the Target Features shape type, to know to read the SHAPE_AREA oR SHAPE_LENGTH property
 #geom = "AREA" if arcpy.Describe(target_features).shapeType.lower() == "polygon" and arcpy.Describe(join_features).shapeType.lower() == "polygon" else "LENGTH"
+
+##########################################################################################################################################
+#Create heatmap based on roads functional class for all Puget Sound OSM roads
+##########################################################################################################################################
+#Create gdb
+gdb=path.join(rootdir,'results/PSOSM')
+if arcpy.Exists(gdb):
+    print('Geodatabase already exists')
+else:
+    arcpy.CreateFileGDB_management(path.join(rootdir, 'results'), 'PSOSM')
+arcpy.env.workspace = gdb
+
+#Select OSM roads, but this map with service roads, as enough through traffic to potentially have some impact
+arcpy.MakeFeatureLayer_management(OSMroads, 'OSMroads_lyr')
+np.unique([row[0] for row in arcpy.da.SearchCursor('OSMroads_lyr', ['fclass'])])
+sel = "{} IN ('motorway','motorway_link','living_street','primary','primary_link','residential','secondary','secondary_link'," \
+      "'tertiary','tertiary_link','trunk','trunk_link','unclassified','unknown', 'service')".format('"fclass"')
+arcpy.SelectLayerByAttribute_management('OSMroads_lyr', 'NEW_SELECTION', sel)
+
+PSOSM_all='PSwtshd_OSMroads_all.shp'
+arcpy.Intersect_analysis(['OSMroads_lyr', 'PSwtshd_dissolve.shp'],out_feature_class=PSOSM_all)
+arcpy.Delete_management('OSMroads_lyr')
+
+#Convert OSM functional categories to numbers
+numdic = {'unknown':1,'service':1, 'residential':2, 'unclassified':3,'tertiary_link':3.5,'tertiary':4, 'secondary_link':4.5,
+ 'secondary':5, 'primary_link':5.5, 'primary':6, 'trunk_link':6.5, 'trunk':7,'motorway_link':7.5,'motorway':8}
+arcpy.AddField_management(PSOSM_all, 'fclassnum', 'FLOAT')
+with arcpy.da.UpdateCursor(PSOSM_all, ['fclass','fclassnum']) as cursor:
+    for row in cursor:
+        if row[0] in numdic.keys():
+            row[1] = numdic[row[0]]
+        else:
+            row[1]=0
+        cursor.updateRow(row)
+
+#Create heatmap
+res = arcpy.GetRasterProperties_management(path.join(rootdir,'results/bing/180620_09_30_class_mlc.tif'), 'CELLSIZEX')
+PSOSM_allproj = 'PSwtshd_OSMroads_all_proj.shp'
+arcpy.Project_management(PSOSM_all, PSOSM_allproj, out_coor_system=UTM10)
+arcpy.PolylineToRaster_conversion(PSOSM_allproj, value_field='fclassnum', out_rasterdataset='osmfclass', priority_field='fclassnum',cellsize=res)
+heat_osmfclas = FocalStatistics(path.join(gdb,'osmfclass'), neighborhood=NbrWeight('C:/Mathis/ICSL/stormwater/results/logkernel100.txt'),
+                                statistics_type='SUM', ignore_nodata='DATA') #It seems that full paths and using a raster within a file geodatabase is required to run function
+heat_osmfclas.save('heat_osmfclas')
+heat_osmfclas_int = Int(Raster('heat_osmfclas'+0.5))
+heat_osmfclas_int.save('heat_osmfclas_int')

@@ -10,7 +10,6 @@ import itertools
 import glob
 arcpy.env.overwriteOutput = True
 
-
 baseURL = "http://gismaps.snoco.org/snocogis/rest/services/transportation/transportation/MapServer/11/query"
 outdir = "C:/Mathis/ICSL/stormwater/data/Snohomish_20180602"
 arcpy.env.workspace = outdir

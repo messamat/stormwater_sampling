@@ -21,6 +21,8 @@ trees = path.join(rootdir, 'data/CitySeattle_20180601/Trees/Trees.shp')
 zoning = path.join(rootdir, 'data/CitySeattle_20180626/City_of_Seattle_Zoning/WGS84/City_of_Seattle_Zoning.shp')
 censustract = path.join(rootdir, 'data/TIGER2017/Profile-County_Tract/Profile-County_Tract.gdb/Tract_2010Census_DP1')
 
+kernel = NbrWeight('C:/Mathis/ICSL/stormwater/results/logkernell00.txt') #UPDATE
+
 gdb = path.join(rootdir,'results/Seattle_sampling.gdb')
 if arcpy.Exists(gdb):
     print('Geodatabase already exists')
@@ -80,7 +82,7 @@ with arcpy.da.UpdateCursor(roadstraffic, ['CUSTOM_ID']) as cursor:
 
 #-----------------------------------------------------------------------------------------------------------------------
 # JOIN DATA SOURCES
-# The Seattle AADT dataset does not include data for state highways. The Washington State Department of Transportation,
+#   The Seattle AADT dataset does not include data for state highways. The Washington State Department of Transportation,
 #   on the other hand, has point AADT data for most highways and several arterials.
 #   Here, we spatially join WSDOT point data to the closest Seattle street segment dataset
 #-----------------------------------------------------------------------------------------------------------------------
@@ -168,10 +170,10 @@ with arcpy.da.UpdateCursor('routes_loc', ['CUSTOM_ID','STNAME_ORD','FMEAS', 'ART
             cursorOuter.updateRow(rowOuter)
 
 #-----------------------------------------------------------------------------------------------------------------------
-#Fill in AADT interpolation for remaining roads and correct erroneous values
-#For freeway ramps, get the city-wide median AADT for freeway ramps
-#For arterial roads with no AADT estimates, get the city-wide median AADT for their given road type (minor vs major arterial, etc.
-#For all non-arterial roads with no estimates, assign AADT of 1000
+#FILL IN AADT FOR REMAINING ROADS AND CORRECT ERRORS
+#   For freeway ramps, get the city-wide median AADT for freeway ramps
+#   For arterial roads with no AADT estimates, get the city-wide median AADT for their given road type (minor vs major arterial, etc.
+#   For all non-arterial roads with no estimates, assign AADT of 1000
 #-----------------------------------------------------------------------------------------------------------------------
 
 #Compute average AADT on freeway ramps
@@ -233,10 +235,10 @@ arcpy.CopyRows_management(roadstraffic_avg, path.join(rootdir, 'results/Seattle_
 # and congestion
 ########################################################################################################################
 res = arcpy.GetRasterProperties_management(path.join(rootdir,'results/bing/180620_09_30_class_mlc.tif'), 'CELLSIZEX')
-kernel = NbrWeight('C:/Mathis/ICSL/stormwater/results/logkernell00.txt')
 #SPEED LIMIT
 arcpy.PolylineToRaster_conversion(roadstraffic_avg, value_field='SPEEDLIMIT', out_rasterdataset='Seattle_spdlm', priority_field='SPEEDLIMIT',cellsize=res)
-heat_spdlm = FocalStatistics(path.join(gdb,'Seattle_spdlm'), neighborhood=NbrWeight('C:/Mathis/ICSL/stormwater/results/logkernel100.txt'), statistics_type='SUM', ignore_nodata='DATA')
+heat_spdlm = FocalStatistics(path.join(gdb,'Seattle_spdlm'), neighborhood=NbrWeight('C:/Mathis/ICSL/stormwater/results/logkernel100.txt'),
+                             statistics_type='SUM', ignore_nodata='DATA') #It seems that full paths are needed to make this work
 heat_spdlm.save('heat_spdlm')
 heat_spdlm_int = Int(Raster('heat_spdlm')+0.5) #Constantly result in overall python crash?
 heat_spdlm_int.save('heat_spdlm_int')
