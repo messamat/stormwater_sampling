@@ -20,6 +20,7 @@ traffic_wsdot = path.join(rootdir, 'data/WSDOT_TPTTraffic_20180508/2016_TrafficC
 trees = path.join(rootdir, 'data/CitySeattle_20180601/Trees/Trees.shp')
 zoning = path.join(rootdir, 'data/CitySeattle_20180626/City_of_Seattle_Zoning/WGS84/City_of_Seattle_Zoning.shp')
 censustract = path.join(rootdir, 'data/TIGER2017/Profile-County_Tract/Profile-County_Tract.gdb/Tract_2010Census_DP1')
+heat_bing = path.join(rootdir, 'results/bing/bingmean1806_Seattle_heat.tif')
 
 kernel = NbrWeight('C:/Mathis/ICSL/stormwater/results/logkernell00.txt') #UPDATE
 
@@ -247,14 +248,22 @@ heat_spdlm_int.save('heat_spdlm_int')
 arcpy.PolylineToRaster_conversion(roadstraffic_avg, value_field='AADT_interp', out_rasterdataset='Seattle_AADT', priority_field='AADT_interp',cellsize=res)
 heat_aadt = FocalStatistics(path.join(gdb,'Seattle_AADT'), neighborhood=kernel, statistics_type='SUM', ignore_nodata='DATA')
 heat_aadt.save('heat_AADT')
-heat_aadt_int = Int(Raster('heat_AADT'+0.5))
+heat_aadt_int = Int(Raster('heat_AADT')+0.5)
 heat_aadt_int.save('heat_aadt_int')
+
+#Integerize bing heat map
+arcpy.ProjectRaster_management(heat_bing, 'heat_bing_proj', UTM10, resampling_type='BILINEAR') #Project
+heat_aadt_int = Int(Raster('heat_bing_proj')+0.5)
+heat_aadt_int.save('heat_bing_int')
 
 #Get overall distribution of values in rasters
 arcpy.BuildRasterAttributeTable_management('heat_AADT_int')
 arcpy.BuildRasterAttributeTable_management('heat_spdlm_int')
+arcpy.BuildRasterAttributeTable_management('heat_bing_int')
 arcpy.CopyRows_management('heat_AADT_int',  path.join(rootdir, 'results/heat_AADT.dbf'))
 arcpy.CopyRows_management('heat_spdlm_int',  path.join(rootdir, 'results/heat_spdlm.dbf'))
+arcpy.CopyRows_management('heat_bing_int',  path.join(rootdir, 'results/heat_bing.dbf'))
+
 
 ########################################################################################################################
 # GET TREES HEATMAP VALUES
@@ -264,7 +273,7 @@ arcpy.CopyRows_management('heat_spdlm_int',  path.join(rootdir, 'results/heat_sp
 #Project
 arcpy.Project_management(trees, 'trees_proj', UTM10)
 #Get values
-ExtractMultiValuesToPoints('trees_proj', ['heat_AADT','heat_spdlm'], bilinear_interpolate_values='BILINEAR')
+ExtractMultiValuesToPoints('trees_proj', ['heat_AADT','heat_spdlm','heat_bing_proj'], bilinear_interpolate_values='BILINEAR')
 #Get zoning
 arcpy.Project_management(zoning, 'zoning_proj', UTM10)
 arcpy.SpatialJoin_analysis('trees_proj', 'zoning_proj', 'trees_zoning', join_operation='JOIN_ONE_TO_ONE', match_option='WITHIN')
