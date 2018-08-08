@@ -22,7 +22,7 @@ zoning = path.join(rootdir, 'data/CitySeattle_20180626/City_of_Seattle_Zoning/WG
 censustract = path.join(rootdir, 'data/TIGER2017/Profile-County_Tract/Profile-County_Tract.gdb/Tract_2010Census_DP1')
 heat_bing = path.join(rootdir, 'results/bing/bingmean1806_Seattle_heat.tif')
 
-kernel = NbrWeight('C:/Mathis/ICSL/stormwater/results/logkernell00.txt') #UPDATE
+kernel = NbrWeight('C:/Mathis/ICSL/stormwater/results/logkernel100.txt') #UPDATE
 
 gdb = path.join(rootdir,'results/Seattle_sampling.gdb')
 if arcpy.Exists(gdb):
@@ -231,7 +231,7 @@ arcpy.CopyRows_management(roadstraffic_avg, path.join(rootdir, 'results/Seattle_
 ########################################################################################################################
 
 ########################################################################################################################
-# CREATE HEATMAPS OF SPEEDLIMIT AND AADT
+# CREATE HEATMAPS OF SPEEDLIMIT, AADT, and BING
 # Use a logarithmic decay function to 'simulate' the pollution spread of various levels of traffic volume, speed,
 # and congestion
 ########################################################################################################################
@@ -251,10 +251,20 @@ heat_aadt.save('heat_AADT')
 heat_aadt_int = Int(Raster('heat_AADT')+0.5)
 heat_aadt_int.save('heat_aadt_int')
 
+
+#Bing
+
+
+
 #Integerize bing heat map
 arcpy.ProjectRaster_management(heat_bing, 'heat_bing_proj', UTM10, resampling_type='BILINEAR') #Project
-heat_aadt_int = Int(Raster('heat_bing_proj')+0.5)
-heat_aadt_int.save('heat_bing_int')
+heat_bing_int = Int(Raster('heat_bing_proj')+0.5)
+heat_bing_int.save('heat_bing_int')
+
+#Compute a heat index out of 100 (standardized, but non-transformed -- for communication)
+bingmax = arcpy.GetRasterProperties_management('heat_bing_int', 'MAXIMUM')
+bingheatindex = 100*Float(Raster('heat_bing_int'))/float(bingmax.getOutput(0))
+bingheatindex.save('heat_bing_index2')
 
 #Get overall distribution of values in rasters
 arcpy.BuildRasterAttributeTable_management('heat_AADT_int')
@@ -280,5 +290,8 @@ arcpy.SpatialJoin_analysis('trees_proj', 'zoning_proj', 'trees_zoning', join_ope
 #Get census data
 arcpy.Project_management(censustract, 'Tract_2010Census_proj', UTM10)
 arcpy.SpatialJoin_analysis('trees_zoning', 'Tract_2010Census_proj', 'trees_zoning_census', join_operation='JOIN_ONE_TO_ONE', match_option='WITHIN')
+#Compute pro
+
+
 #Export table
 arcpy.CopyRows_management('trees_zoning_census', out_table=path.join(rootdir, 'results/trees_tab.dbf'))
