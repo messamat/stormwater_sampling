@@ -243,6 +243,7 @@ heat_spdlm = FocalStatistics(path.join(gdb,'Seattle_spdlm'), neighborhood=NbrWei
 heat_spdlm.save('heat_spdlm')
 heat_spdlm_int = Int(Raster('heat_spdlm')+0.5) #Constantly result in overall python crash?
 heat_spdlm_int.save('heat_spdlm_int')
+arcpy.CopyRaster_management('heat_spdlm_int', path.join(rootdir, 'results/heatspdlm_int'))
 
 #AADT
 arcpy.PolylineToRaster_conversion(roadstraffic_avg, value_field='AADT_interp', out_rasterdataset='Seattle_AADT', priority_field='AADT_interp',cellsize=res)
@@ -250,21 +251,12 @@ heat_aadt = FocalStatistics(path.join(gdb,'Seattle_AADT'), neighborhood=kernel, 
 heat_aadt.save('heat_AADT')
 heat_aadt_int = Int(Raster('heat_AADT')+0.5)
 heat_aadt_int.save('heat_aadt_int')
+arcpy.CopyRaster_management('heat_aadt_int', path.join(rootdir, 'results/heataadt_int'))
 
+#Bing See src/Bing_format.py
+arcpy.CopyRaster_management('heat_bing_int', path.join(rootdir, 'results/heatbing_int'))
+arcpy.CopyRaster_management('heat_bing_index', path.join(rootdir, 'results/heat_bing_index'))
 
-#Bing
-
-
-
-#Integerize bing heat map
-arcpy.ProjectRaster_management(heat_bing, 'heat_bing_proj', UTM10, resampling_type='BILINEAR') #Project
-heat_bing_int = Int(Raster('heat_bing_proj')+0.5)
-heat_bing_int.save('heat_bing_int')
-
-#Compute a heat index out of 100 (standardized, but non-transformed -- for communication)
-bingmax = arcpy.GetRasterProperties_management('heat_bing_int', 'MAXIMUM')
-bingheatindex = 100*Float(Raster('heat_bing_int'))/float(bingmax.getOutput(0))
-bingheatindex.save('heat_bing_index2')
 
 #Get overall distribution of values in rasters
 arcpy.BuildRasterAttributeTable_management('heat_AADT_int')
