@@ -21,6 +21,9 @@ trees = path.join(rootdir, 'data/CitySeattle_20180601/Trees/Trees.shp')
 zoning = path.join(rootdir, 'data/CitySeattle_20180626/City_of_Seattle_Zoning/WGS84/City_of_Seattle_Zoning.shp')
 censustract = path.join(rootdir, 'data/TIGER2017/Profile-County_Tract/Profile-County_Tract.gdb/Tract_2010Census_DP1')
 heat_bing = path.join(rootdir, 'results/bing/bingmean1806_Seattle_heat.tif')
+NLCD_reclass = path.join(rootdir, 'results/LU.gdb/NLCD_reclass_final')
+NLCD_imp = path.join(rootdir, 'data/nlcd_2011_impervious_2011_edition_2014_10_10/nlcd_2011_impervious_2011_edition_2014_10_10.img')
+PSwatershed = path.join(rootdir, 'results/PSwtshd_dissolve.shp')
 
 kernel = NbrWeight('C:/Mathis/ICSL/stormwater/results/logkernel100.txt') #UPDATE
 
@@ -34,6 +37,8 @@ arcpy.env.workspace = gdb
 #New variables
 roadstraffic = 'Seattle_roadstraffic'
 roadstraffic_avg =roadstraffic+'_AADT'
+NLCD_reclass_PS = path.join(rootdir, 'results/NLCD_reclass_final_PS.tif')
+NLCD_imp_PS = path.join(rootdir, 'results/nlcd_imp_ps')
 UTM10 = arcpy.SpatialReference(26910)
 
 ########################################################################################################################
@@ -284,6 +289,19 @@ arcpy.Project_management(censustract, 'Tract_2010Census_proj', UTM10)
 arcpy.SpatialJoin_analysis('trees_zoning', 'Tract_2010Census_proj', 'trees_zoning_census', join_operation='JOIN_ONE_TO_ONE', match_option='WITHIN')
 #Compute pro
 
+########################################################################################################################
+# EXPORT DATA
 
 #Export table
 arcpy.CopyRows_management('trees_zoning_census', out_table=path.join(rootdir, 'results/trees_tab.dbf'))
+
+#Export NLCD data to Puget Sound scale
+arcpy.CopyRaster_management(NLCD_reclass, NLCD_reclass_PS)
+#Export NLCD impervious data
+imp = arcpy.sa.ExtractByMask(NLCD_imp, PSwatershed)
+imp.save(NLCD_imp_PS)
+#Compute focal stats
+imp_mean = arcpy.sa.FocalStatistics(NLCD_imp_PS, neighborhood = NbrCircle(3, "CELL"), statistics_type= 'MEAN')
+imp_mean.save(NLCD_imp_PS + '_mean.tif')
+
+#
