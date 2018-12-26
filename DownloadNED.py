@@ -7,6 +7,9 @@ import zipfile
 import arcpy
 import re
 
+UTM10 = arcpy.SpatialReference(26910)
+arcpy.CheckOutExtension('Spatial')
+
 rootdir = 'C:/Mathis/ICSL/stormwater'
 def download_unzip_ned(tempdir, URLlist, outdir, outras, download=None, extract=None):
     os.chdir(tempdir)
@@ -39,16 +42,32 @@ def download_unzip_ned(tempdir, URLlist, outdir, outras, download=None, extract=
     print('Mosaicking rasters')
     try:
         arcpy.MosaicToNewRaster_management(arcpy.ListRasters('*.img'), outdir, outras, number_of_bands= 1)
-    except:
-        arcpy.MosaicToNewRaster_management(arcpy.ListRasters('grd*'), outdir, outras, number_of_bands=1,
-                                           pixel_type= '16_BIT_SIGNED')
+    except arcpy.ExecuteError:
+        arcpy.AddError(arcpy.GetMessages(2))
+        raslist = filter(re.compile('grd.*(?<!jpg)(?<!xml)$').search, os.listdir(os.getcwd()))
+        arcpy.MosaicToNewRaster_management(raslist, outdir, outras, number_of_bands=1, pixel_type= '16_BIT_SIGNED')
 
-    if arcpy.Exists(os.path.join(rootdir, 'results/NED_PS')):
+    if arcpy.Exists(outras):
         os.remove('zipped')
 
+
+arcpy.env.workspace = os.path.join(rootdir, 'results')
 #Download and mosaic NED 1/9 arc-second
-download_unzip_ned(tempdir = os.path.join(rootdir, 'data/NED19'), URLlist = 'cartExport_20181219_165432.txt',
-                   outdir = os.path.join(rootdir, 'results'), outras = 'NED19_PS')
+download_unzip_ned(tempdir = os.path.join(rootdir, 'data/NED19'), URLlist = 'cartExport_20181221_075329.txt',
+                   outdir = 'D:/Processing', outras = 'ned19_ps', download = None, extract = None)
+if not arcpy.Exists('D:/Processing/ned19_psproj'):
+    arcpy.ProjectRaster_management('D:/Processing/ned19_ps', 'D:/Processing/ned19_psproj', UTM10, resampling_type ='BILINEAR')
+if not arcpy.Exists('D:/Processing/slope19_ps'):
+    slope = arcpy.sa.Slope('D:/Processing/ned19_psproj', 'DEGREE')
+    slope.save('D:/Processing/slope19_ps')
+
+
 #Download and mosaic NED 1/3 arc-second
-download_unzip_ned(tempdir = os.path.join(rootdir, 'data/NED13'), URLlist = 'cartExport_20181220_114439.txt',
-                   outdir = os.path.join('D:/Processing'), outras = 'NED13_PS', download=None, extract=None)
+if not arcpy.Exists('ned_ps'):
+    download_unzip_ned(tempdir = os.path.join(rootdir, 'data/NED13'), URLlist = 'cartExport_20181220_114439.txt',
+                       outdir = os.path.join(rootdir, 'results'), outras = 'ned_ps', download=None, extract=None)
+if not arcpy.Exists('ned_psproj'):
+    arcpy.ProjectRaster_management('ned_ps', 'ned_psproj', UTM10, resampling_type ='BILINEAR')
+if not arcpy.Exists('slope_ps'):
+    slope = arcpy.sa.Slope('ned_psproj', 'DEGREE')
+    slope.save('slove_ps')
