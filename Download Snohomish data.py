@@ -10,6 +10,7 @@ import itertools
 import glob
 arcpy.env.overwriteOutput = True
 
+#Download road data for snohomish county
 baseURL = "http://gismaps.snoco.org/snocogis/rest/services/transportation/transportation/MapServer/11/query"
 outdir = "C:/Mathis/ICSL/stormwater/data/Snohomish_20180602"
 arcpy.env.workspace = outdir
@@ -35,6 +36,7 @@ for fc in arcpy.ListFeatureClasses('snocoroads_*.shp'):
     arcpy.Delete_management(fc)
 #
 
+#Download
 baseURL = "http://gismaps.snoco.org/snocogis/rest/services/transportation/transportation_infrastructure/MapServer/19/query"
 outdir = "C:/Mathis/ICSL/stormwater/data/Snohomish_20180602"
 arcpy.env.workspace = outdir
@@ -55,9 +57,8 @@ for i,j in itertools.izip(IDrange, IDrange[1:]):
         break
         print('Downloaded up to {} features'.format(i))
 
-arcpy.Merge_management(arcpy.ListFeatureClasses('snocoroads_*.shp'),output='snocoroads.shp')
-for fc in arcpy.ListFeatureClasses('snocoroads_*.shp'):
-    arcpy.Delete_management(fc)
+
+
 
 
 ################### DUMP ##########################
