@@ -5,6 +5,7 @@
 import arcpy
 from arcpy.sa import *
 from os import *
+import re
 import numpy as np
 from collections import defaultdict
 
@@ -24,8 +25,6 @@ heat_bing = path.join(rootdir, 'results/bing/bingmean1806_Seattle_heat.tif')
 NLCD_reclass = path.join(rootdir, 'results/LU.gdb/NLCD_reclass_final')
 NLCD_imp = path.join(rootdir, 'data/nlcd_2011_impervious_2011_edition_2014_10_10/nlcd_2011_impervious_2011_edition_2014_10_10.img')
 PSwatershed = path.join(rootdir, 'results/PSwtshd_dissolve.shp')
-
-kernel = NbrWeight('C:/Mathis/ICSL/stormwater/results/logkernel100.txt') #UPDATE
 
 gdb = path.join(rootdir,'results/Seattle_sampling.gdb')
 if arcpy.Exists(gdb):
@@ -252,22 +251,26 @@ arcpy.CopyRaster_management('heat_spdlm_int', path.join(rootdir, 'results/heatsp
 
 #AADT
 arcpy.PolylineToRaster_conversion(roadstraffic_avg, value_field='AADT_interp', out_rasterdataset='Seattle_AADT', priority_field='AADT_interp',cellsize=res)
-heat_aadt = FocalStatistics(path.join(gdb,'Seattle_AADT'), neighborhood=kernel, statistics_type='SUM', ignore_nodata='DATA')
-heat_aadt.save('heat_AADT')
-heat_aadt_int = Int(Raster('heat_AADT')+0.5)
-heat_aadt_int.save('heat_aadt_int')
-arcpy.CopyRaster_management('heat_aadt_int', path.join(rootdir, 'results/heataadt_int'))
+for kertxt in os.listdir(path.join(rootdir, 'results/bing')):
+    if re.compile('kernel').match(kertxt):
+        outext = 'heatAADT{}'.format(os.path.splitext(kertxt)[0][7:])
+        if not arcpy.Exists(outext):
+            print(outext)
+            kernel = NbrWeight(path.join(rootdir, 'results/bing', kertxt))
+            heat_aadt = Int(
+                FocalStatistics(path.join(gdb, 'Seattle_AADT'), neighborhood=kernel, statistics_type='SUM',
+                                ignore_nodata='DATA') / 1000 + 0.5)
+            heat_aadt.save(outext)
 
 #Bing See src/Bing_format.py
 arcpy.CopyRaster_management('heat_bing_int', path.join(rootdir, 'results/heatbing_int'))
 arcpy.CopyRaster_management('heat_bing_index', path.join(rootdir, 'results/heat_bing_index'))
 
-
 #Get overall distribution of values in rasters
-arcpy.BuildRasterAttributeTable_management('heat_AADT_int')
+arcpy.BuildRasterAttributeTable_management('heatAADTlog100')
 arcpy.BuildRasterAttributeTable_management('heat_spdlm_int')
 arcpy.BuildRasterAttributeTable_management('heat_bing_int')
-arcpy.CopyRows_management('heat_AADT_int',  path.join(rootdir, 'results/heat_AADT.dbf'))
+arcpy.CopyRows_management('heatAADTlog100',  path.join(rootdir, 'results/heat_AADT.dbf'))
 arcpy.CopyRows_management('heat_spdlm_int',  path.join(rootdir, 'results/heat_spdlm.dbf'))
 arcpy.CopyRows_management('heat_bing_int',  path.join(rootdir, 'results/heat_bing.dbf'))
 
@@ -280,20 +283,21 @@ arcpy.CopyRows_management('heat_bing_int',  path.join(rootdir, 'results/heat_bin
 #Project
 arcpy.Project_management(trees, 'trees_proj', UTM10)
 #Get values
-ExtractMultiValuesToPoints('trees_proj', ['heat_AADT','heat_spdlm','heat_bing_proj'], bilinear_interpolate_values='BILINEAR')
+ExtractMultiValuesToPoints('trees_proj', ['heat_AADT','heat_spdlm','heat_bing_proj'], bilinear_interpolate_values='BILINEAR') #Initial set of values used to design sampling
+ExtractMultiValuesToPoints('trees_proj', arcpy.ListRasters('heatAADT*'), bilinear_interpolate_values='BILINEAR')
+ExtractMultiValuesToPoints('trees_proj', arcpy.ListRasters('heat_bing*'), bilinear_interpolate_values='BILINEAR')
 #Get zoning
 arcpy.Project_management(zoning, 'zoning_proj', UTM10)
 arcpy.SpatialJoin_analysis('trees_proj', 'zoning_proj', 'trees_zoning', join_operation='JOIN_ONE_TO_ONE', match_option='WITHIN')
 #Get census data
 arcpy.Project_management(censustract, 'Tract_2010Census_proj', UTM10)
 arcpy.SpatialJoin_analysis('trees_zoning', 'Tract_2010Census_proj', 'trees_zoning_census', join_operation='JOIN_ONE_TO_ONE', match_option='WITHIN')
-#Compute pro
 
 ########################################################################################################################
 # EXPORT DATA
-
 #Export table
 arcpy.CopyRows_management('trees_zoning_census', out_table=path.join(rootdir, 'results/trees_tab.dbf'))
+arcpy.CopyRows_management('trees_zoning_census', out_table=path.join(rootdir, 'results/trees_tab.csv'))
 
 #Export NLCD data to Puget Sound scale
 arcpy.CopyRaster_management(NLCD_reclass, NLCD_reclass_PS)
@@ -304,4 +308,4 @@ imp.save(NLCD_imp_PS)
 imp_mean = arcpy.sa.FocalStatistics(NLCD_imp_PS, neighborhood = NbrCircle(3, "CELL"), statistics_type= 'MEAN')
 imp_mean.save(NLCD_imp_PS + '_mean.tif')
 
-#
+#Check datasets have 'road gradient', otherwise, compute it and compare it to known gradients
