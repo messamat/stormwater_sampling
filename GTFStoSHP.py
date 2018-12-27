@@ -96,7 +96,7 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc):
     print('Joining and exporting data...')
     arcpy.MakeFeatureLayer_management(newfc_lines, 'shapes_lyr')
     arcpy.AddJoin_management('shapes_lyr', 'shape_id', 'trips_routes_count', 'shape_id')
-    arcpy.CopyFeatures_management('shapes_lyr', 'kingtransit_routes')
+    arcpy.CopyFeatures_management('shapes_lyr', out_fc + '_routes')
 
     print('Deleting intermediate outputs...')
     for inter_lyr in ['routes', 'trips', 'calendar', newfc, newfc_lines]:
