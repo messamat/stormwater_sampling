@@ -36,10 +36,12 @@ def SpatialJoinLines_LargestOverlap(target_features, join_features, outgdb, out_
     arcpy.env.workspace = outgdb
 
     #Split target and join lines at intersections
+    print('Splitting lines...')
     arcpy.FeatureToLine_management(target_features, 'target_split')
     arcpy.FeatureToLine_management(join_features, 'joinfeat_split')
 
     #Bufferize both datasets
+    print('Buffering...')
     arcpy.Buffer_analysis('target_split', 'target_buf', bufsize, method='GEODESIC')
     arcpy.Buffer_analysis('joinfeat_split', 'joinfeat_buf', bufsize, method='GEODESIC')
     #Get buffer area for target feature
@@ -47,18 +49,20 @@ def SpatialJoinLines_LargestOverlap(target_features, join_features, outgdb, out_
 
     #Spatial join with largest overlap
     # Calculate intersection between Target Feature and Join Features
+    print('Intersecting...')
     arcpy.Intersect_analysis(['target_buf', 'joinfeat_buf'], 'lines_intersect', join_attributes='ALL')
     arcpy.AlterField_management('lines_intersect','AREA_GEO','AREA_targetbuf', 'AREA_targetbuf')
     arcpy.AddGeometryAttributes_management('lines_intersect', 'AREA_GEODESIC', Area_Unit='SQUARE_METERS')
     arcpy.AlterField_management('lines_intersect','AREA_GEO','AREA_inters', 'AREA_inters')
 
     #Dissolve to sum intersecting area over
+    print('Computing statistics...')
     arcpy.Statistics_analysis('lines_intersect', 'lines_intersect_stats',
                               statistics_fields = [['AREA_inters', 'SUM'], ['AREA_targetbuf', 'FIRST']],
                               case_field = ['FID_joinfeat_buf', 'FID_target_buf'])
 
-
-    [f.name for f in arcpy.ListFields('lines_intersect_stats')]
+    print('Joining by largest overlap...')
+    #[f.name for f in arcpy.ListFields('lines_intersect_stats')]
     # Find which Join Feature has the largest overlap with each Target Feature
     fields = ['FID_target_buf', 'FID_joinfeat_buf', "SUM_AREA_inters", "FIRST_AREA_targetbuf"]
     overlap_dict = {}
@@ -106,6 +110,10 @@ def SpatialJoinLines_LargestOverlap(target_features, join_features, outgdb, out_
     joinfields = [x.name for x in arcpy.ListFields('joinfeat_split') if not x.required and x.name in fields_select]
     arcpy.JoinField_management(out_fc, "JOIN_FID", 'joinfeat_split', arcpy.Describe('joinfeat_split').OIDFieldName, joinfields)
 
+    #Add length attribute to be able to remove outliers from crossings
+    arcpy.AddGeometryAttributes_management(out_fc, 'LENGTH_GEODESIC', Length_Unit='METERS')
+
+    #Delete intermediate outputs
     for outlyr in ['joinfeat_split', 'target_slip','target_buf',
                    'joinfeat_buf', 'lines_intersect', 'lines_intersect_stats']:
         print('Deleting {}'.format(outlyr))
