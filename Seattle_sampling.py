@@ -8,9 +8,13 @@ from os import *
 import re
 import numpy as np
 from collections import defaultdict
+from SpatialJoinLines_LargestOverlap import *
+import pandas as pd
+import numpy as np
 
 arcpy.CheckOutExtension("Spatial")
 arcpy.env.overwriteOutput=True
+arcpy.env.qualifiedFieldNames = False
 
 #Set up paths
 rootdir = 'C:/Mathis/ICSL/stormwater/'
@@ -25,6 +29,12 @@ heat_bing = path.join(rootdir, 'results/bing/bingmean1806_Seattle_heat.tif')
 NLCD_reclass = path.join(rootdir, 'results/LU.gdb/NLCD_reclass_final')
 NLCD_imp = path.join(rootdir, 'data/nlcd_2011_impervious_2011_edition_2014_10_10/nlcd_2011_impervious_2011_edition_2014_10_10.img')
 PSwatershed = path.join(rootdir, 'results/PSwtshd_dissolve.shp')
+cities = path.join(rootdir, 'results/PScitylimits.shp')
+counties = path.join(rootdir, 'data/TIGER2017/tl_2018_us_county/tl_2018_us_county.shp')
+PSOSM_all= path.join(rootdir, 'results/PSwtshd_OSMroads_all.shp')
+PSgdb=path.join(rootdir,'results/PSOSM.gdb')
+OSMPierce_datajoin = path.join(PSgdb, 'OSMPierce_datajoin')
+OSMWSDOT_datajoin = path.join(PSgdb, 'OSM_WSDOT_joinstats')
 
 gdb = path.join(rootdir,'results/Seattle_sampling.gdb')
 if arcpy.Exists(gdb):
@@ -39,6 +49,9 @@ roadstraffic_avg =roadstraffic+'_AADT'
 NLCD_reclass_PS = path.join(rootdir, 'results/NLCD_reclass_final_PS.tif')
 NLCD_imp_PS = path.join(rootdir, 'results/nlcd_imp_ps')
 UTM10 = arcpy.SpatialReference(26910)
+OSMSeattle = path.join(PSgdb, 'PSwtshd_OSMroads_Seattle')
+OSMSeattle_datajoin = path.join(PSgdb, 'OSMSeattle_datajoin')
+
 
 ########################################################################################################################
 # GET TRAFFIC COUNT FOR EVERY ROAD SEGMENT IN SEATTLE
@@ -221,23 +234,63 @@ with arcpy.da.UpdateCursor('routes_loc', ['STNAME_ORD','ARTDESCRIP','AADT_avg','
 
 #For all non-arterial roads that do not already have an AADT value, assign 1000
 arcpy.JoinField_management(roadstraffic_avg, 'CUSTOM_ID', 'routes_loc', 'CUSTOM_ID', 'AADT_interp')
-with arcpy.da.UpdateCursor(roadstraffic_avg, ['ARTDESCRIP','AADT_avg','AADT_interp']) as cursor:
+with arcpy.da.UpdateCursor(roadstraffic_avg, ['ARTDESCRIP', 'AADT_avg', 'AADT_interp']) as cursor:
     for row in cursor:
         if row[1] is not None:
             row[2] = row[1]
-        if row[1] is None and row[2] is None and row[0] in ['','Not Designated']:
-            row[2]=1000
+        if row[1] is None and row[2] is None and row[0] in ['', 'Not Designated']:
+            row[2] = 1000
         cursor.updateRow(row)
 
 #Write out individual roads' attributes
 arcpy.CopyRows_management(roadstraffic_avg, path.join(rootdir, 'results/Seattle_roads.dbf'))
 
-########################################################################################################################
+#-----------------------------------------------------------------------------------------------------------------------
+#Join OSM and Seattle data to improve interpolation of AADT and speed limit across Puget Sound based on functional class
+#-----------------------------------------------------------------------------------------------------------------------
+#Subselect OSM roads for Pierce County
+arcpy.MakeFeatureLayer_management(cities, 'cities_lyr')
+arcpy.SelectLayerByAttribute_management('cities_lyr', selection_type='NEW_SELECTION',
+                                        where_clause="CityFIPSLo ='5363000'")
+arcpy.Clip_analysis(PSOSM_all, 'cities_lyr', OSMSeattle)
+
+#Join Seattle AADT data to OSM Seattle
+SpatialJoinLines_LargestOverlap(target_features=OSMSeattle, join_features=path.join(gdb, roadstraffic_avg),
+                                out_fc=OSMSeattle_datajoin, outgdb=PSgdb, bufsize='10 meters', keep_all=True,
+                                fields_select=['AADT_avg', 'SPEEDLIMIT', 'ARTDESCRIP'])
+
+#Create a compound table for all data on traffic counts
+#(only keep OSM street segments whose buffer overlapped at least 80% with original data & whose length > 5 m
+# & post-2000 Pierce County data)
+fclass_ADT = pd.DataFrame(
+    [list(row[:3]) + [None, 'Seattle']
+     for row in arcpy.da.SearchCursor(OSMSeattle_datajoin, ['osm_id', 'fclass', 'AADT_avg', 'intersper', 'LENGTH_GEO']) \
+     if row[2] is not None and row[3] > 0.8 and row[4] > 10] +
+    [list(row[:3])+ [int(row[3]), 'Pierce']
+     for row in arcpy.da.SearchCursor(OSMPierce_datajoin, ['osm_id', 'fclass', 'ADT', 'ADTYear', 'intersper', 'LENGTH_GEO']) \
+     if row[2] is not None and row[3] != u' ' and row[4] > 0.8 and row[5] > 10] +
+    [list(row) + [None, 'WSDOT']
+     for row in arcpy.da.SearchCursor(OSMWSDOT_datajoin, ['osm_id', 'FIRST_fclass', 'MEAN_AADT']) \
+     if row[2] is not None],
+    columns=['osm_id', 'fclass', 'ADT', 'year', 'agency'])
+fclass_ADT = fclass_ADT[(fclass_ADT['year'] > 2000) | (fclass_ADT['year'].isnull())]
+#Check segments that have multiple ADT counts but different values
+duplis = fclass_ADT[(fclass_ADT.duplicated('osm_id', keep=False)) &
+                    (~(fclass_ADT.duplicated(['osm_id','ADT'], keep=False)))].sort_values(by=['osm_id'])
+#Keep most recent measurement for Pierce
+fclass_ADT[fclass_ADT['agency'] == 'Pierce'] = fclass_ADT[fclass_ADT['agency'] == 'Pierce'].\
+    sort_values('year', ascending=False).\
+    drop_duplicates('osm_id').\
+    sort_index()
+#Average for each segement
+fclass_ADTnodupli = fclass_ADT.groupby('osm_id').agg({'ADT' : ['mean'], 'fclass' : ['first', 'last']})
+check = fclass_ADTnodupli[fclass_ADTnodupli['fclass','first'] != fclass_ADTnodupli['fclass','last']]
+fclass_ADTnodupli.columns = fclass_ADTnodupli.columns.droplevel()
+fclass_ADTmedian = fclass_ADTnodupli.groupby('first').median()
 
 ########################################################################################################################
-# CREATE HEATMAPS OF SPEEDLIMIT, AADT, and BING
-# Use a logarithmic decay function to 'simulate' the pollution spread of various levels of traffic volume, speed,
-# and congestion
+# CREATE HEATMAPS OF SPEEDLIMIT (for Seattle), AADT (for Seattle), functional class (for Puget Sound) and BING (see Bing_format.py)
+# Use a decay function to 'simulate' the pollution spread of various levels of traffic volume, speed, and congestion
 ########################################################################################################################
 res = arcpy.GetRasterProperties_management(path.join(rootdir,'results/bing/180620_09_30_class_mlc.tif'), 'CELLSIZEX')
 #SPEED LIMIT
@@ -249,7 +302,7 @@ heat_spdlm_int = Int(Raster('heat_spdlm')+0.5) #Constantly result in overall pyt
 heat_spdlm_int.save('heat_spdlm_int')
 arcpy.CopyRaster_management('heat_spdlm_int', path.join(rootdir, 'results/heatspdlm_int'))
 
-#AADT
+#Raw AADT (Seattle)
 arcpy.PolylineToRaster_conversion(roadstraffic_avg, value_field='AADT_interp', out_rasterdataset='Seattle_AADT', priority_field='AADT_interp',cellsize=res)
 for kertxt in os.listdir(path.join(rootdir, 'results/bing')):
     if re.compile('kernel').match(kertxt):
@@ -261,6 +314,17 @@ for kertxt in os.listdir(path.join(rootdir, 'results/bing')):
                 FocalStatistics(path.join(gdb, 'Seattle_AADT'), neighborhood=kernel, statistics_type='SUM',
                                 ignore_nodata='DATA') / 1000 + 0.5)
             heat_aadt.save(outext)
+
+#OSM functional class-based AADT
+res = arcpy.GetRasterProperties_management(path.join(rootdir,'results/bing/180620_09_30_class_mlc.tif'), 'CELLSIZEX')
+PSOSM_allproj = 'PSwtshd_OSMroads_all_proj.shp'
+arcpy.Project_management(PSOSM_all, PSOSM_allproj, out_coor_system=UTM10)
+arcpy.PolylineToRaster_conversion(PSOSM_allproj, value_field='fclassnum', out_rasterdataset='osmfclass', priority_field='fclassnum',cellsize=res)
+heat_osmfclas = FocalStatistics(path.join(gdb,'osmfclass'), neighborhood=NbrWeight('C:/Mathis/ICSL/stormwater/results/logkernel100.txt'),
+                                statistics_type='SUM', ignore_nodata='DATA') #It seems that full paths and using a raster within a file geodatabase is required to run function
+heat_osmfclas.save('heat_osmfclas')
+heat_osmfclas_int = Int(Raster('heat_osmfclas'+0.5))
+heat_osmfclas_int.save('heat_osmfclas_int')
 
 #Bing See src/Bing_format.py
 arcpy.CopyRaster_management('heat_bing_int', path.join(rootdir, 'results/heatbing_int'))
