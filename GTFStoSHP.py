@@ -134,34 +134,39 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
         lineformat = line.replace('\n', '').split(',')
         cal_dic[lineformat[0]][int(lineformat[2])-1] += 1
 
-    #Each route has multiple trips
-    #Each trip is a unique bus line-time-week day combination (e.g. 6:47 am MON-FRI Line 71)
+    '''Each route has multiple trips
+       Each trip is a unique bus line-time-week day combination (e.g. 6:47 am MON-FRI Line 71)
+    '''
+
     #Compute number of days/week for each service_id in calendar
     arcpy.AddField_management('calendar', 'normalnum', 'SHORT')
     arcpy.AddField_management('calendar', 'date_added', 'SHORT')
     arcpy.AddField_management('calendar', 'date_removed', 'SHORT')
     arcpy.AddField_management('calendar', 'date_weekavg', 'FLOAT')
     arcpy.AddField_management('calendar', 'adjustnum', 'FLOAT')
+    arcpy.AddField_management('calendar', 'service_len', 'SHORT')
 
     cal_fields = ['service_id',  'start_date','end_date', 'normalnum', #0, 1, 2, 3
                   'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', #4-10
-                  'date_added', 'date_removed', 'date_weekavg', 'adjustnum'] #11, 12, 13, 14
+                  'date_added', 'date_removed', 'date_weekavg', 'adjustnum', 'service_len'] #11, 12, 13, 14, 15
 
     with arcpy.da.UpdateCursor('calendar', cal_fields) as cursor:
         for row in cursor:
-            print(row[1])
+            service_len = (datetime.strptime(str(row[2]), '%Y%m%d') -
+                           datetime.strptime(str(row[1]), '%Y%m%d')).days  # Compute length of service in weeks
+            row[15] = service_len
+
+            #print(row[1])
             if row[0] in cal_dic: #if service_id in calendar_dates dictionary
                 row[11] = cal_dic[row[0]][0] #date_added = number of added service dates in calendar_dates.txt (type 1)
                 row[12] = cal_dic[row[0]][1] #date_removed = number of removed service dates in calendar_dates.txt (type 2)
-                service_len = (datetime.strptime(str(row[2]), '%Y%m%d') -
-                               datetime.strptime(str(row[1]), '%Y%m%d')).days / 7.0 #Compute length of service in weeks
-                row[13] = (cal_dic[row[0]][0]-cal_dic[row[0]][1])/service_len #Compute average net number of exceptions/week
+                row[13] = (cal_dic[row[0]][0]-cal_dic[row[0]][1])/(float(service_len)/7.0) #Compute average net number of exceptions/week
             else:
                 row[11:14] = (0,0,0)
             cursor.updateRow(row) #update row halfway to avoid having to retype row[13] equation
 
             row[3] = sum(row[4:11]) #normalnum = sum(monday-sunday trips)
-            row[14] = sum(row[4:11]) + row[13] #adjustnum = normalnum + date_weekavg
+            row[14] = max(sum(row[4:11]) + row[13], 0) #adjustnum = normalnum + date_weekavg
 
             if datetime.strptime(str(row[1]), '%Y%m%d') > datetime.now() and current == True:  # If start_date > current date
                 row[3] = 0
@@ -177,7 +182,8 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
     #Summarize trips by route_id & shape_id (here add
     arcpy.Statistics_analysis('trips_routes_calendar', 'trips_routes_count',
                               statistics_fields=[['normalnum', 'SUM'], ['adjustnum', 'SUM'],
-                                                 ['direction_id', 'FIRST'], ['direction_id', 'LAST']],
+                                                 ['direction_id', 'FIRST'], ['direction_id', 'LAST'],
+                                                 ['service_len', 'MIN'], ['service_len', 'MAX']],
                               case_field = ['shape_id', 'route_id', 'route_short_name',
                                             'route_desc', 'route_type'])
 
