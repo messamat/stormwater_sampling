@@ -1,1 +1,0 @@
-http://gismaps.snoco.org/snocogis/rest/services/transportation/transportation_infrastructure/MapServer/4|Traffic Signal Pole|10
