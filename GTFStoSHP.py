@@ -151,11 +151,11 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
         for row in cursor:
             print(row[1])
             if row[0] in cal_dic: #if service_id in calendar_dates dictionary
-                row[11] = cal_dic[row[0]][1] #date_added = number of added service dates in calendar_dates.txt (type 1)
-                row[12] = cal_dic[row[0]][2] #date_removed = number of removed service dates in calendar_dates.txt (type 2)
+                row[11] = cal_dic[row[0]][0] #date_added = number of added service dates in calendar_dates.txt (type 1)
+                row[12] = cal_dic[row[0]][1] #date_removed = number of removed service dates in calendar_dates.txt (type 2)
                 service_len = (datetime.strptime(str(row[2]), '%Y%m%d') -
                                datetime.strptime(str(row[1]), '%Y%m%d')).days / 7.0 #Compute length of service in weeks
-                row[13] = (cal_dic[row[0]][1]-cal_dic[row[0]][2])/service_len #Compute average net number of exceptions/week
+                row[13] = (cal_dic[row[0]][0]-cal_dic[row[0]][1])/service_len #Compute average net number of exceptions/week
             else:
                 row[11:14] = (0,0,0)
             cursor.updateRow(row) #update row halfway to avoid having to retype row[13] equation
