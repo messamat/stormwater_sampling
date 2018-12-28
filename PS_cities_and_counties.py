@@ -80,8 +80,8 @@ arcpy.CopyFeatures_management('counties_lyr', 'PScounties')
 arcpy.Delete_management('counties_lyr')
 
 ##########################################################################################################################################
-#Create heatmap based on roads functional class for all Puget Sound OSM roads
-##########################################################################################################################################
+#Prepare OSM data to create heatmap based on roads functional class for all Puget Sound OSM roads
+
 arcpy.env.workspace = gdb
 
 #Select OSM roads, but this map with service roads, as enough through traffic to potentially have some impact
@@ -93,22 +93,8 @@ arcpy.SelectLayerByAttribute_management('OSMroads_lyr', 'NEW_SELECTION', sel)
 arcpy.Intersect_analysis(['OSMroads_lyr', 'PSwtshd_dissolve.shp'],out_feature_class=PSOSM_all)
 arcpy.Delete_management('OSMroads_lyr')
 
-#Convert OSM functional categories to numbers
-numdic = {'unknown':1,'service':1, 'residential':2, 'unclassified':3,'tertiary_link':3.5,'tertiary':4, 'secondary_link':4.5,
- 'secondary':5, 'primary_link':5.5, 'primary':6, 'trunk_link':6.5, 'trunk':7,'motorway_link':7.5,'motorway':8}
-arcpy.AddField_management(PSOSM_all, 'fclassnum', 'FLOAT')
-with arcpy.da.UpdateCursor(PSOSM_all, ['fclass','fclassnum']) as cursor:
-    for row in cursor:
-        if row[0] in numdic.keys():
-            row[1] = numdic[row[0]]
-        else:
-            row[1]=0
-        cursor.updateRow(row)
-
-
 # Join OSM and Pierce County + WSDOT traffic counts data to improve interpolation of speed limits
 # and traffic volume within road fclasses
-
 #Subselect OSM roads for Pierce County
 arcpy.MakeFeatureLayer_management(counties, 'counties_lyr')
 arcpy.SelectLayerByAttribute_management('counties_lyr', 'NEW_SELECTION', "COUNTYNS='01529159'")
