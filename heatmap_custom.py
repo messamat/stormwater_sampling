@@ -22,6 +22,7 @@ Description: create integer heatmaps using arcpy focal statistics based on a set
 import arcpy
 import os
 import re
+import time
 
 def customheatmap(kernel_dir, in_raster, out_gdb, out_var, divnum=1, keyw=''):
     for kertxt in os.listdir(kernel_dir):
@@ -29,8 +30,11 @@ def customheatmap(kernel_dir, in_raster, out_gdb, out_var, divnum=1, keyw=''):
             outext = 'heat{0}{1}'.format(out_var, os.path.splitext(kertxt)[0][7:])
             if not arcpy.Exists(outext):
                 print(outext)
+                tic = time.time()
                 kernel = arcpy.sa.NbrWeight(os.path.join(kernel_dir, kertxt))
                 heat_aadt = arcpy.sa.Int(
                     arcpy.sa.FocalStatistics(in_raster, neighborhood=kernel, statistics_type='SUM',
                                     ignore_nodata='DATA') / divnum + 0.5)
                 heat_aadt.save(os.path.join(out_gdb, outext))
+                toc = time.time()
+                print('Took {} s'.format(round(toc-tic)))
