@@ -8,9 +8,14 @@ from os import *
 import re
 import numpy as np
 from collections import defaultdict
-from SpatialJoinLines_LargestOverlap import *
 import pandas as pd
 import numpy as np
+import time
+from GTFStoSHP import *
+
+#Custom modules
+from SpatialJoinLines_LargestOverlap import *
+from heatmap_custom import *
 
 arcpy.CheckOutExtension("Spatial")
 arcpy.env.overwriteOutput=True
@@ -31,10 +36,19 @@ NLCD_imp = path.join(rootdir, 'data/nlcd_2011_impervious_2011_edition_2014_10_10
 PSwatershed = path.join(rootdir, 'results/PSwtshd_dissolve.shp')
 cities = path.join(rootdir, 'results/PScitylimits.shp')
 counties = path.join(rootdir, 'data/TIGER2017/tl_2018_us_county/tl_2018_us_county.shp')
-PSOSM_all= path.join(rootdir, 'results/PSwtshd_OSMroads_all.shp')
+
+template_ras = path.join(rootdir,'results/bing/181204_02_00_class_mlc.tif')
+res = arcpy.GetRasterProperties_management(template_ras, 'CELLSIZEX')
+
 PSgdb=path.join(rootdir,'results/PSOSM.gdb')
+PSOSM_all= path.join(rootdir, 'results/PSwtshd_OSMroads_all.shp')
 OSMPierce_datajoin = path.join(PSgdb, 'OSMPierce_datajoin')
 OSMWSDOT_datajoin = path.join(PSgdb, 'OSM_WSDOT_joinstats')
+
+PSgtfs = os.path.join(rootdir, 'data\SoundTransit_201812\gtfs_puget_sound_consolidated.zip')
+PStransit = os.path.join(rootdir, 'results/transit.gdb/PStransit')
+PStransitbus = PStransit + '_busroutes'
+PStransitras = os.path.join(rootdir, 'results/transit.gdb/PStransit_ras')
 
 gdb = path.join(rootdir,'results/Seattle_sampling.gdb')
 if arcpy.Exists(gdb):
@@ -51,7 +65,8 @@ NLCD_imp_PS = path.join(rootdir, 'results/nlcd_imp_ps')
 UTM10 = arcpy.SpatialReference(26910)
 OSMSeattle = path.join(PSgdb, 'PSwtshd_OSMroads_Seattle')
 OSMSeattle_datajoin = path.join(PSgdb, 'OSMSeattle_datajoin')
-
+PSOSM_allproj = path.join(PSgdb, 'PSwtshd_OSMroads_all_proj')
+OSM_AADT = path.join(PSgdb,'OSM_AADT')
 
 ########################################################################################################################
 # GET TRAFFIC COUNT FOR EVERY ROAD SEGMENT IN SEATTLE
@@ -246,9 +261,9 @@ with arcpy.da.UpdateCursor(roadstraffic_avg, ['ARTDESCRIP', 'AADT_avg', 'AADT_in
 arcpy.CopyRows_management(roadstraffic_avg, path.join(rootdir, 'results/Seattle_roads.dbf'))
 
 #-----------------------------------------------------------------------------------------------------------------------
-#Join OSM and Seattle data to improve interpolation of AADT and speed limit across Puget Sound based on functional class
+#ASSIGN FUNCTIONAL CLASS-BASED MEDIANS OF AADT TO OSM FOR PUGET SOUND
 #-----------------------------------------------------------------------------------------------------------------------
-#Subselect OSM roads for Pierce County
+#Subselect OSM roads for Seattle
 arcpy.MakeFeatureLayer_management(cities, 'cities_lyr')
 arcpy.SelectLayerByAttribute_management('cities_lyr', selection_type='NEW_SELECTION',
                                         where_clause="CityFIPSLo ='5363000'")
@@ -282,17 +297,73 @@ fclass_ADT[fclass_ADT['agency'] == 'Pierce'] = fclass_ADT[fclass_ADT['agency'] =
     sort_values('year', ascending=False).\
     drop_duplicates('osm_id').\
     sort_index()
-#Average for each segement
+#Average for each segment
 fclass_ADTnodupli = fclass_ADT.groupby('osm_id').agg({'ADT' : ['mean'], 'fclass' : ['first', 'last']})
 check = fclass_ADTnodupli[fclass_ADTnodupli['fclass','first'] != fclass_ADTnodupli['fclass','last']]
+#Compute median ADT for each OSM functional class
 fclass_ADTnodupli.columns = fclass_ADTnodupli.columns.droplevel()
 fclass_ADTmedian = fclass_ADTnodupli.groupby('first').median()
 
+#Convert OSM functional categories to numbers
+#Service road ADT doesn't really make sense, as includes mostly alleys.
+#Unclassified seems to be misused in OSM and often appear to stand for unknwon
+#Change both to residential level
+arcpy.AddField_management(PSOSM_all, 'fclassADT', 'LONG')
+with arcpy.da.UpdateCursor(PSOSM_all, ['fclass','fclassADT']) as cursor:
+    for row in cursor:
+        if row[0] in fclass_ADTmedian.index:
+            if row[0] in ['service','unclassified']:
+                row[1] = int(fclass_ADTmedian.loc['residential'])
+            else:
+                row[1] = int(fclass_ADTmedian.loc[row[0]])
+        else:
+            row[1]=0
+        cursor.updateRow(row)
+
+#-----------------------------------------------------------------------------------------------------------------------
+# PREPARE TRANSIT DATA TO CREATE HEATMAP BASED ON BUS ROUTES
+#-----------------------------------------------------------------------------------------------------------------------
+#Convert GTFS to routes with number of trips per week on each line
+GTFStoSHPweeklynumber(gtfs_dir= PSgtfs, out_gdb=os.path.dirname(PStransit), out_fc = os.path.basename(PStransit),
+                      keep = True)
+#Only keep buses with trips
+arcpy.MakeFeatureLayer_management(PStransit + '_routes', 'PStransit_lyr',
+                                  where_clause= '(route_type = 3) AND (MIN_service_len > 0) AND (SUM_adjustnum > 0)')
+arcpy.Project_management('PStransit_lyr', PStransitbus, UTM10)
+
+#Create raster of weekly number of buses at the same resolution as bing data
+# Convert weekly number of buses to integer
+arcpy.AddField_management(PStransitbus, 'adjustnum_int', 'SHORT')
+arcpy.CalculateField_management(PStransitbus, 'adjustnum_int',
+                                expression='int(10*!SUM_adjustnum!+0.5)', expression_type='PYTHON')
+
+#       For each shape, create its own raster. An alternative would follow those lines:
+#       https://gis.stackexchange.com/questions/32217/exploding-overlapping-to-new-non-overlapping-polygons
+IDf = arcpy.Describe(PStransitbus).OIDFieldName
+outras_base = path.join(rootdir, 'results/transit.gdb/busnum_')
+arcpy.env.snapRaster = template_ras
+with arcpy.da.SearchCursor(PStransitbus, ['OID@']) as cursor:
+    for row in cursor:
+        outras = outras_base + str(row[0])
+        if not arcpy.Exists(outras):
+            print('{0} = {1}'.format(IDf, row[0]))
+            arcpy.MakeFeatureLayer_management(PStransitbus, 'bus_lyr', where_clause= '{0} = {1}'.format(IDf, row[0]))
+            arcpy.PolylineToRaster_conversion('bus_lyr', value_field='adjustnum_int', out_rasterdataset=outras, cellsize=res)
+#Mosaic to new raster
+arcpy.env.workspace = os.path.split(outras_base)[0]
+transitras_tiles = arcpy.ListRasters('busnum_*')
+arcpy.MosaicToNewRaster_management(transitras_tiles, arcpy.env.workspace, os.path.split(PStransitras)[1],
+                                   number_of_bands= 1, mosaic_method = 'SUM')
+for tile in transitras_tiles:
+    arcpy.Delete_management(tile)
+arcpy.ClearEnvironment('Workspace')
+
 ########################################################################################################################
-# CREATE HEATMAPS OF SPEEDLIMIT (for Seattle), AADT (for Seattle), functional class (for Puget Sound) and BING (see Bing_format.py)
+# CREATE HEATMAPS
+# of speedlimit(for Seattle), raw AADT (for Seattle), functional class-based  AADT (for Puget Sound) and
+# BING (see Bing_format.py)
 # Use a decay function to 'simulate' the pollution spread of various levels of traffic volume, speed, and congestion
 ########################################################################################################################
-res = arcpy.GetRasterProperties_management(path.join(rootdir,'results/bing/180620_09_30_class_mlc.tif'), 'CELLSIZEX')
 #SPEED LIMIT
 arcpy.PolylineToRaster_conversion(roadstraffic_avg, value_field='SPEEDLIMIT', out_rasterdataset='Seattle_spdlm', priority_field='SPEEDLIMIT',cellsize=res)
 heat_spdlm = FocalStatistics(path.join(gdb,'Seattle_spdlm'), neighborhood=NbrWeight('C:/Mathis/ICSL/stormwater/results/logkernel100.txt'),
@@ -304,28 +375,17 @@ arcpy.CopyRaster_management('heat_spdlm_int', path.join(rootdir, 'results/heatsp
 
 #Raw AADT (Seattle)
 arcpy.PolylineToRaster_conversion(roadstraffic_avg, value_field='AADT_interp', out_rasterdataset='Seattle_AADT', priority_field='AADT_interp',cellsize=res)
-for kertxt in os.listdir(path.join(rootdir, 'results/bing')):
-    if re.compile('kernel').match(kertxt):
-        outext = 'heatAADT{}'.format(os.path.splitext(kertxt)[0][7:])
-        if not arcpy.Exists(outext):
-            print(outext)
-            kernel = NbrWeight(path.join(rootdir, 'results/bing', kertxt))
-            heat_aadt = Int(
-                FocalStatistics(path.join(gdb, 'Seattle_AADT'), neighborhood=kernel, statistics_type='SUM',
-                                ignore_nodata='DATA') / 1000 + 0.5)
-            heat_aadt.save(outext)
+customheatmap(kernel_dir=path.join(rootdir, 'results/bing'), in_raster=path.join(gdb, 'Seattle_AADT'),
+              out_gdb = gdb, out_var='AADT', divnum=100, keyw='')
 
 #OSM functional class-based AADT
-res = arcpy.GetRasterProperties_management(path.join(rootdir,'results/bing/180620_09_30_class_mlc.tif'), 'CELLSIZEX')
-PSOSM_allproj = 'PSwtshd_OSMroads_all_proj.shp'
 arcpy.Project_management(PSOSM_all, PSOSM_allproj, out_coor_system=UTM10)
-arcpy.PolylineToRaster_conversion(PSOSM_allproj, value_field='fclassnum', out_rasterdataset='osmfclass', priority_field='fclassnum',cellsize=res)
-heat_osmfclas = FocalStatistics(path.join(gdb,'osmfclass'), neighborhood=NbrWeight('C:/Mathis/ICSL/stormwater/results/logkernel100.txt'),
-                                statistics_type='SUM', ignore_nodata='DATA') #It seems that full paths and using a raster within a file geodatabase is required to run function
-heat_osmfclas.save('heat_osmfclas')
-heat_osmfclas_int = Int(Raster('heat_osmfclas'+0.5))
-heat_osmfclas_int.save('heat_osmfclas_int')
+arcpy.PolylineToRaster_conversion(PSOSM_allproj, value_field='fclassADT', out_rasterdataset=OSM_AADT,
+                                  priority_field='fclassADT',cellsize=res)
+customheatmap(kernel_dir=path.join(rootdir, 'results/bing'), in_raster=OSM_AADT,
+              out_gdb = PSgdb, out_var='OSMAADT', divnum=100, keyw='')
 
+#######STILL TO CHECK AND RUN###########
 #Bing See src/Bing_format.py
 arcpy.CopyRaster_management('heat_bing_int', path.join(rootdir, 'results/heatbing_int'))
 arcpy.CopyRaster_management('heat_bing_index', path.join(rootdir, 'results/heat_bing_index'))
