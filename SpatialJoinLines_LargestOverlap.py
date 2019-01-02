@@ -36,8 +36,17 @@ def SpatialJoinLines_LargestOverlap(target_features, join_features, outgdb, out_
     arcpy.env.workspace = outgdb
 
     #Split target and join lines at intersections
+    print('Selecting lines...')
+    joinhull = arcpy.MinimumBoundingGeometry_management(join_features, 'joinhull', 'CONVEX_HULL', group_option='ALL')
+    targethull = arcpy.MinimumBoundingGeometry_management(target_features, 'targethull', 'CONVEX_HULL', group_option='ALL')
+
     print('Splitting lines...')
-    arcpy.FeatureToLine_management(target_features, 'target_split')
+    lyr = arcpy.MakeFeatureLayer_management(target_features)
+    arcpy.SelectLayerByLocation_management(lyr, 'WITHIN', joinhull, selection_type='NEW_SELECTION')
+    arcpy.FeatureToLine_management(lyr, 'target_split') #Feature to line splits lines at intersections
+
+    lyr = arcpy.MakeFeatureLayer_management(join_features)
+    arcpy.SelectLayerByLocation_management(lyr, 'WITHIN', targethull, selection_type='NEW_SELECTION')
     arcpy.FeatureToLine_management(join_features, 'joinfeat_split')
 
     #Bufferize both datasets

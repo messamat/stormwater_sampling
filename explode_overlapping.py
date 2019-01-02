@@ -31,7 +31,7 @@ def ExplodeOverlappingLines(fc, tolerance, keep=True):
 
     print('Intersecting buffers...')
     intersect = arcpy.Intersect_analysis(fcbuf,'intersect')
-    
+
     print('Creating dictionary of overlaps...')
     findID = arcpy.FindIdentical_management(intersect,"explFindID","Shape")
     arcpy.MakeFeatureLayer_management('intersect',"intlyr")
