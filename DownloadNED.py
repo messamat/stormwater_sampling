@@ -63,11 +63,11 @@ if not arcpy.Exists('D:/Processing/slope19_ps'):
 
 
 #Download and mosaic NED 1/3 arc-second
-if not arcpy.Exists('ned_ps'):
+if not arcpy.Exists('ned13_ps'):
     download_unzip_ned(tempdir = os.path.join(rootdir, 'data/NED13'), URLlist = 'cartExport_20181220_114439.txt',
-                       outdir = os.path.join(rootdir, 'results'), outras = 'ned_ps', download=None, extract=None)
-if not arcpy.Exists('ned_psproj'):
-    arcpy.ProjectRaster_management('ned_ps', 'ned_psproj', UTM10, resampling_type ='BILINEAR')
-if not arcpy.Exists('slope_ps'):
-    slope = arcpy.sa.Slope('ned_psproj', 'DEGREE')
-    slope.save('slove_ps')
+                       outdir = os.path.join(rootdir, 'results'), outras = 'ned13_ps', download=None, extract=None)
+if not arcpy.Exists('ned13_psproj'):
+    arcpy.ProjectRaster_management('ned13_ps', 'ned13_psproj', UTM10, resampling_type ='BILINEAR')
+if not arcpy.Exists('slope13_ps'):
+    slope = arcpy.sa.Slope('ned13_psproj', 'DEGREE')
+    slope.save('slove13_ps')
