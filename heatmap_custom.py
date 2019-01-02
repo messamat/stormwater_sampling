@@ -26,7 +26,7 @@ import time
 
 def customheatmap(kernel_dir, in_raster, out_gdb, out_var, divnum=1, keyw=''):
     for kertxt in os.listdir(kernel_dir):
-        if re.compile('kernel' + keyw).match(kertxt):
+        if re.compile('kernel.*' + keyw).match(kertxt):
             outext = 'heat{0}{1}'.format(out_var, os.path.splitext(kertxt)[0][7:])
             if not arcpy.Exists(outext):
                 print(outext)
