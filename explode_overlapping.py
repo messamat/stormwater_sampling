@@ -4,81 +4,53 @@ Inspired from https://gis.stackexchange.com/questions/32217/exploding-overlappin
 
 import arcpy
 import os
+from collections import defaultdict
 
-gdb = 'C:/Mathis/ICSL/stormwater/results/transit.gdb'
-fc = os.path.join(gdb, 'test')
-idName = 'shape_id'
-arcpy.env.workspace = gdb
+arcpy.env.overwriteOutput=True
+arcpy.env.qualifiedFieldNames = False
 
-def countOverlaps(fc,idName):
-    intersect = arcpy.Intersect_analysis(fc,'intersect')
+def explodeOverlaps(fc, idName, tolerance):
+    idName = "ORIG_FID"
+    fcbuf = arcpy.Buffer_analysis(fc, fc+'buf', tolerance, line_side='FULL', line_end_type='FLAT')
+    intersect = arcpy.Intersect_analysis(fcbuf,'intersect')
     findID = arcpy.FindIdentical_management(intersect,"explFindID","Shape")
-    arcpy.MakeFeatureLayer_management(intersect,"intlyr")
-    arcpy.AddJoin_management("intlyr",arcpy.Describe("intlyr").OIDfieldName,findID,"IN_FID","KEEP_ALL")
-    segIDs = {}
+    arcpy.MakeFeatureLayer_management('intersect',"intlyr")
+    arcpy.AddJoin_management("intlyr",arcpy.Describe("intlyr").OIDfieldName,"explFindID","IN_FID","KEEP_ALL")
     featseqName = "explFindID.FEAT_SEQ"
-    idNewName = "intersect."+idName
+    idNewName = "intersect." + idName
+    segIDs = defaultdict(list)
+    segIDs2 = defaultdict(list)
 
-    for row in arcpy.SearchCursor("intlyr"):
-        idVal = row.getValue(idNewName)
-        featseqVal = row.getValue(featseqName)
-        segIDs[featseqVal] = []
-    for row in arcpy.SearchCursor("intlyr"):
-        idVal = row.getValue(idNewName)
-        featseqVal = row.getValue(featseqName)
-        segIDs[featseqVal].append(idVal)
+    for row in arcpy.da.SearchCursor("intlyr", [featseqName, idNewName]):
+        segIDs[row[0]].append(row[1])
+    for v in segIDs.values():
+        for segID in v:
+            segIDs2[segID].extend([k for k in v if k != segID and k not in segIDs2[segID]])
 
-    segIDs2 = {}
-    for row in arcpy.SearchCursor("intlyr"):
-        idVal = row.getValue(idNewName)
-        segIDs2[idVal] = []
+    arcpy.RemoveJoin_management("intlyr", arcpy.Describe("explFindID").name)
 
-    for x,y in segIDs.iteritems():
-        for segID in y:
-            segIDs2[segID].extend([k for k in y if k != segID])
+    grpdict = {}
+    # Mark all non-overlapping one to group 1
+    for row in arcpy.da.SearchCursor(fcbuf, [idName]):
+        if row[0] in segIDs2:
+            grpdict[row[0]] = None
+        else:
+            grpdict[row[0]] = 1
 
-    for x,y in segIDs2.iteritems():
-        segIDs2[x] = list(set(y))
+    i = 1
+    while None in grpdict.values():
+        print(i)
+        ovList = []
+        for kv in sorted(segIDs2.items(), key=lambda kv: (len(kv[1]), kv[0])):
+            if grpdict[kv[0]] is None:
+                if kv[0] not in ovList:
+                    grpdict[kv[0]] = i
+                    ovList.extend(kv[1])
+        i += 1
 
-    arcpy.RemoveJoin_management("intlyr",arcpy.Describe(findID).name)
-
-    if 'overlaps' not in [k.name for k in arcpy.ListFields(fc)]:
-        arcpy.AddField_management(fc,'overlaps',"TEXT")
-    if 'ovlpCount' not in [k.name for k in arcpy.ListFields(fc)]:
-        arcpy.AddField_management(fc,'ovlpCount',"SHORT")
-
-    urows = arcpy.UpdateCursor(fc)
-    for urow in urows:
-        idVal = urow.getValue(idName)
-        if segIDs2.get(idVal):
-            urow.overlaps = str(segIDs2[idVal]).strip('[]')
-            urow.ovlpCount = len(segIDs2[idVal])
-        urows.updateRow(urow)
-
-def explodeOverlaps(fc,idName):
-
-    countOverlaps(fc,idName)
-
-    arcpy.AddField_management(fc,'expl',"SHORT")
-
-    urows = arcpy.UpdateCursor(fc,'"overlaps" IS NULL')
-    for urow in urows:
-        urow.expl = 1
-        urows.updateRow(urow)
-
-    i=1
-    lyr = arcpy.MakeFeatureLayer_management(fc)
-    while int(arcpy.GetCount_management(arcpy.SelectLayerByAttribute_management(lyr,"NEW_SELECTION",'"expl" IS NULL')).getOutput(0)) > 0:
-        ovList=[]
-        urows = arcpy.UpdateCursor(fc,'"expl" IS NULL','','','ovlpCount D')
-        for urow in urows:
-            ovVal = urow.overlaps
-            idVal = urow.getValue(idName)
-            intList = ovVal.replace(' ','').split(',')
-            for x in intList:
-                intList[intList.index(x)] = int(x)
-            if idVal not in ovList:
-                urow.expl = i
-            urows.updateRow(urow)
-            ovList.extend(intList)
-        i+=1
+    arcpy.AddField_management(fc, 'expl', "SHORT")
+    with arcpy.da.UpdateCursor(fc,
+                               [arcpy.Describe(fc).OIDfieldName, 'expl']) as cursor:
+        for row in cursor:
+            row[1] = grpdict[row[0]]
+            cursor.updateRow(row)
