@@ -46,9 +46,18 @@ OSMPierce_datajoin = path.join(PSgdb, 'OSMPierce_datajoin')
 OSMWSDOT_datajoin = path.join(PSgdb, 'OSM_WSDOT_joinstats')
 
 PSgtfs = os.path.join(rootdir, 'data\SoundTransit_201812\gtfs_puget_sound_consolidated.zip')
-PStransit = os.path.join(rootdir, 'results/transit.gdb/PStransit')
-PStransitbus = PStransit + '_busroutes'
-PStransitras = os.path.join(rootdir, 'results/transit.gdb/PStransit_ras')
+
+#NED data paths to be updated when transfer to laptop
+hardrive = 'D:/Processing'
+NED19proj = os.path.join(hardrive, 'ned19_psproj')
+NED13proj = os.path.join(rootdir, 'results/ned13_psproj')
+NED19smooth = os.path.join(hardrive, 'ned19_smooth')
+NED13smooth = os.path.join(hardrive, 'ned13_smooth')
+rangetab19 = path.join(PSgdb, 'OSM_elv19range')
+rangetab13 = path.join(PSgdb, 'OSM_elv13range')
+rangetab19_smooth = path.join(PSgdb, 'OSM_elv19range_smooth')
+rangetab13_smooth = path.join(PSgdb, 'OSM_elv13range_smooth')
+#########
 
 gdb = path.join(rootdir,'results/Seattle_sampling.gdb')
 if arcpy.Exists(gdb):
@@ -67,6 +76,16 @@ OSMSeattle = path.join(PSgdb, 'PSwtshd_OSMroads_Seattle')
 OSMSeattle_datajoin = path.join(PSgdb, 'OSMSeattle_datajoin')
 PSOSM_allproj = path.join(PSgdb, 'PSwtshd_OSMroads_all_proj')
 OSM_AADT = path.join(PSgdb,'OSM_AADT')
+PSOSMras = path.join(PSgdb, 'PSwtshd_OSMroads_all_projras')
+PSOSM_elv = path.join(PSgdb, 'PSwtshd_OSMroads_all_proj_elv')
+
+PStransit = os.path.join(rootdir, 'results/transit.gdb/PStransit')
+PStransitbus = PStransit + '_busroutes'
+PStransitbus_proj = PStransit + '_busroutes_proj'
+PStransit_inters = os.path.join(rootdir, 'results/transit.gdb/PStransit_intersect')
+
+PStransitras = os.path.join(rootdir, 'results/transit.gdb/PStransit_ras')
+
 
 ########################################################################################################################
 # GET TRAFFIC COUNT FOR EVERY ROAD SEGMENT IN SEATTLE
@@ -76,6 +95,7 @@ OSM_AADT = path.join(PSgdb,'OSM_AADT')
 #   Note that:
 #   1. AADT segments are larger than City of Seattle streets, hence no need to split the street dataset.
 #   2. Here average week day traffic is used as it has a fuller coverage of streets.
+########################################################################################################################
 
 #Check for common fields between Seattle streets dataset and traffic_count dataset
 roads_fields = [f.name for f in arcpy.ListFields(roads)]
@@ -260,6 +280,10 @@ with arcpy.da.UpdateCursor(roadstraffic_avg, ['ARTDESCRIP', 'AADT_avg', 'AADT_in
 #Write out individual roads' attributes
 arcpy.CopyRows_management(roadstraffic_avg, path.join(rootdir, 'results/Seattle_roads.dbf'))
 
+########################################################################################################################
+# PREPARE OTHER VARIABLES TO CREATE HEATMAPS: FUNCTIONAL-CLASS BASED AADT AND SPEED LIMIT, SLOPE, AND TRANSIT ROUTES
+########################################################################################################################
+
 #-----------------------------------------------------------------------------------------------------------------------
 #ASSIGN FUNCTIONAL CLASS-BASED MEDIANS OF AADT TO OSM FOR PUGET SOUND
 #-----------------------------------------------------------------------------------------------------------------------
@@ -320,6 +344,9 @@ with arcpy.da.UpdateCursor(PSOSM_all, ['fclass','fclassADT']) as cursor:
             row[1]=0
         cursor.updateRow(row)
 
+#Project OSM data
+arcpy.Project_management(PSOSM_all, PSOSM_allproj, out_coor_system=UTM10)
+
 #-----------------------------------------------------------------------------------------------------------------------
 # PREPARE TRANSIT DATA TO CREATE HEATMAP BASED ON BUS ROUTES
 #-----------------------------------------------------------------------------------------------------------------------
@@ -329,13 +356,38 @@ GTFStoSHPweeklynumber(gtfs_dir= PSgtfs, out_gdb=os.path.dirname(PStransit), out_
 #Only keep buses with trips
 arcpy.MakeFeatureLayer_management(PStransit + '_routes', 'PStransit_lyr',
                                   where_clause= '(route_type = 3) AND (MIN_service_len > 0) AND (SUM_adjustnum > 0)')
-arcpy.Project_management('PStransit_lyr', PStransitbus, UTM10)
+arcpy.CopyFeatures_management('PStransit_lyr', PStransitbus)
+arcpy.Project_management(PStransitbus, PStransitbus_proj, UTM10)
 
 #Create raster of weekly number of buses at the same resolution as bing data
 # Convert weekly number of buses to integer
-arcpy.AddField_management(PStransitbus, 'adjustnum_int', 'SHORT')
-arcpy.CalculateField_management(PStransitbus, 'adjustnum_int',
+arcpy.AddField_management(PStransitbus_proj, 'adjustnum_int', 'SHORT')
+arcpy.CalculateField_management(PStransitbus_proj, 'adjustnum_int',
                                 expression='int(10*!SUM_adjustnum!+0.5)', expression_type='PYTHON')
+
+#Alternative 1
+#Try rubbersheeting of transitbus routes to WSDOT road network with 30 m tolerance:
+    #Copy transitbusroute_pro: _align
+    #Create rubbersheet links
+    #rubbersheet
+#rubbersheet results suck - 2h30
+
+#Alternative 2
+#Try integrating lines to WSDOT road network with 15 m tolerance:
+    #Copy -> PStransit_busroutes_proj_integrateWSDOT_15m_2
+#Integrating is crap for highways
+
+#Alternative 3
+arcpy.SplitLine_management(PStransitbus_proj, PStransitbus_proj + '_splitv')
+arcpy.FindIdentical_management(PStransitbus_proj + '_splitv', "explFindID", "Shape")
+arcpy.MakeFeatureLayer_management(PStransitbus_proj + '_splitv', "intlyr")
+arcpy.AddJoin_management("intlyr", arcpy.Describe("intlyr").OIDfieldName, "explFindID", "IN_FID", "KEEP_ALL")
+arcpy.Dissolve_management("intlyr", PStransitbus_proj + '_splitv_diss', dissolve_field='explFindID.FEAT_SEQ',
+                          statistics_fields=[[os.path.split(PStransitbus_proj)[1] + '_splitv.adjustnum_int', 'SUM']])
+arcpy.RepairGeometry_management(PStransitbus_proj + '_splitv_diss', delete_null = 'DELETE_NULL') #sometimes creates empty geom
+tolerance = (2.0**0.5)*float(res.getOutput(0))/2 #length of half pixel diagonal
+explodeOverlaps(PStransitbus_proj + '_splitv_diss', tolerance)
+
 
 #       For each shape, create its own raster. An alternative would follow those lines:
 #       https://gis.stackexchange.com/questions/32217/exploding-overlapping-to-new-non-overlapping-polygons
@@ -354,9 +406,69 @@ arcpy.env.workspace = os.path.split(outras_base)[0]
 transitras_tiles = arcpy.ListRasters('busnum_*')
 arcpy.MosaicToNewRaster_management(transitras_tiles, arcpy.env.workspace, os.path.split(PStransitras)[1],
                                    number_of_bands= 1, mosaic_method = 'SUM')
-for tile in transitras_tiles:
-    arcpy.Delete_management(tile)
+# for tile in transitras_tiles:
+#     arcpy.Delete_management(tile)
 arcpy.ClearEnvironment('Workspace')
+
+#-----------------------------------------------------------------------------------------------------------------------
+# PREPARE DATA ON ROAD GRADIENTS
+#-----------------------------------------------------------------------------------------------------------------------
+#Run on NED19 max-min for line itself
+arcpy.PolylineToRaster_conversion(PSOSM_allproj, 'osm_id', PSOSMras, cell_assignment='MAXIMUM_COMBINED_LENGTH',
+                                  priority_field= 'fclassADT', cellsize = NED19proj)
+ZonalStatisticsAsTable(PSOSMras, 'osm_id', NED19proj, out_table = rangetab19, statistics_type= 'RANGE', ignore_nodata='NODATA')
+
+
+arcpy.AddField_management(rangetab19, 'osm_id', 'TEXT')
+arcpy.CalculateField_management(rangetab19, 'osm_id', '!osm_id!', 'PYTHON')
+
+#Run on NED13 max-min for line itself
+ZonalStatisticsAsTable(PSOSMras, 'Value', NED13proj, out_table = rangetab13, statistics_type= 'RANGE', ignore_nodata='NODATA')
+arcpy.AddField_management(rangetab13, 'osm_id', 'TEXT')
+arcpy.CalculateField_management(rangetab13, 'osm_id', '!Value!', 'PYTHON')
+
+#Run on smoothed NED 19 max-min for line itself
+ned19_smooth = FocalStatistics(NED19proj, NbrRectangle(3, 3, 'cells'), statistics_type='MEDIAN', ignore_nodata='DATA')
+ned19_smooth.save(NED19smooth)
+ZonalStatisticsAsTable(PSOSMras, 'Value', NED19smooth, out_table = rangetab19_smooth, statistics_type= 'RANGE', ignore_nodata='NODATA')
+arcpy.AddField_management(rangetab19_smooth, 'osm_id', 'TEXT')
+arcpy.CalculateField_management(rangetab19_smooth, 'osm_id', '!Value!', 'PYTHON')
+
+#Run on smoothed NED 13 max-min for line itself
+ned13_smooth = FocalStatistics(NED13proj, NbrRectangle(3, 3, 'cells'), statistics_type='MEDIAN', ignore_nodata='DATA')
+ned13_smooth.save(NED13smooth)
+ZonalStatisticsAsTable(PSOSMras, 'Value', NED13smooth, out_table = rangetab13_smooth, statistics_type= 'RANGE', ignore_nodata='NODATA')
+arcpy.AddField_management(rangetab13_smooth, 'osm_id', 'TEXT')
+arcpy.CalculateField_management(rangetab13_smooth, 'osm_id', '!Value!', 'PYTHON')
+
+#Join all data to road vector
+arcpy.MakeFeatureLayer_management(PSOSM_allproj, 'osmroads')
+arcpy.AddJoin_management('osmroads', 'osm_id', rangetab19, 'osm_id')
+arcpy.AddJoin_management('osmroads', 'osm_id', rangetab13, 'osm_id')
+arcpy.AddJoin_management('osmroads', 'osm_id', rangetab19_smooth, 'osm_id')
+arcpy.AddJoin_management('osmroads', 'osm_id', rangetab13_smooth, 'osm_id')
+arcpy.CopyFeatures_management('osmroads', PSOSM_elv)
+
+########
+arcpy.AddField_management(PSOSM_elv, 'gradient19', 'FLOAT')
+arcpy.AddField_management(PSOSM_elv, 'gradient13', 'FLOAT')
+arcpy.AddField_management(PSOSM_elv, 'gradient19_smooth', 'FLOAT')
+arcpy.AddField_management(PSOSM_elv, 'gradient13_smooth', 'FLOAT')
+arcpy.CalculateField_management(PSOSM_elv, 'gradient19', '!!/!L')
+arcpy.CalculateField_management(PSOSM_elv, 'gradient19', '!!/!L')
+arcpy.CalculateField_management(PSOSM_elv, 'gradient19', '!!/!L')
+arcpy.CalculateField_management(PSOSM_elv, 'gradient19', '!!/!L')
+
+
+#Compare to Seattle roads slope values. See whether 1/3 arc-sec is just less precise or also bias compared to 19
+
+
+
+
+
+
+
+
 
 ########################################################################################################################
 # CREATE HEATMAPS
@@ -379,13 +491,15 @@ customheatmap(kernel_dir=path.join(rootdir, 'results/bing'), in_raster=path.join
               out_gdb = gdb, out_var='AADT', divnum=100, keyw='')
 
 #OSM functional class-based AADT
-arcpy.Project_management(PSOSM_all, PSOSM_allproj, out_coor_system=UTM10)
 arcpy.PolylineToRaster_conversion(PSOSM_allproj, value_field='fclassADT', out_rasterdataset=OSM_AADT,
                                   priority_field='fclassADT',cellsize=res)
 customheatmap(kernel_dir=path.join(rootdir, 'results/bing'), in_raster=OSM_AADT,
               out_gdb = PSgdb, out_var='OSMAADT', divnum=100, keyw='')
 
-#######STILL TO CHECK AND RUN###########
+
+########################################################################################################################
+#######                     STILL TO CHECK AND RUN                                                           ###########
+########################################################################################################################
 #Bing See src/Bing_format.py
 arcpy.CopyRaster_management('heat_bing_int', path.join(rootdir, 'results/heatbing_int'))
 arcpy.CopyRaster_management('heat_bing_index', path.join(rootdir, 'results/heat_bing_index'))
