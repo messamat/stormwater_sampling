@@ -11,11 +11,12 @@ from collections import defaultdict
 import pandas as pd
 import numpy as np
 import time
-from GTFStoSHP import *
 
 #Custom modules
 from SpatialJoinLines_LargestOverlap import *
 from heatmap_custom import *
+from GTFStoSHP import *
+from explode_overlapping import *
 
 arcpy.CheckOutExtension("Spatial")
 arcpy.env.overwriteOutput=True
@@ -46,7 +47,7 @@ OSMPierce_datajoin = path.join(PSgdb, 'OSMPierce_datajoin')
 OSMWSDOT_datajoin = path.join(PSgdb, 'OSM_WSDOT_joinstats')
 
 PSgtfs = os.path.join(rootdir, 'data\SoundTransit_201812\gtfs_puget_sound_consolidated.zip')
-
+Binggdb = os.path.join(rootdir, 'results/bing/postprocess.gdb')
 #NED data paths to be updated when transfer to laptop
 hardrive = 'D:/Processing'
 NED19proj = os.path.join(hardrive, 'ned19_psproj')
@@ -78,14 +79,13 @@ PSOSM_allproj = path.join(PSgdb, 'PSwtshd_OSMroads_all_proj')
 OSM_AADT = path.join(PSgdb,'OSM_AADT')
 PSOSMras = path.join(PSgdb, 'PSwtshd_OSMroads_all_projras')
 PSOSM_elv = path.join(PSgdb, 'PSwtshd_OSMroads_all_proj_elv')
+OSM_gradient = path.join(PSgdb, 'OSM_gradient')
 
 PStransit = os.path.join(rootdir, 'results/transit.gdb/PStransit')
 PStransitbus = PStransit + '_busroutes'
 PStransitbus_proj = PStransit + '_busroutes_proj'
-PStransit_inters = os.path.join(rootdir, 'results/transit.gdb/PStransit_intersect')
-
+PStransitbus_splitdiss = PStransitbus_proj + '_splitv_diss'
 PStransitras = os.path.join(rootdir, 'results/transit.gdb/PStransit_ras')
-
 
 ########################################################################################################################
 # GET TRAFFIC COUNT FOR EVERY ROAD SEGMENT IN SEATTLE
@@ -365,49 +365,37 @@ arcpy.AddField_management(PStransitbus_proj, 'adjustnum_int', 'SHORT')
 arcpy.CalculateField_management(PStransitbus_proj, 'adjustnum_int',
                                 expression='int(10*!SUM_adjustnum!+0.5)', expression_type='PYTHON')
 
-#Alternative 1
-#Try rubbersheeting of transitbus routes to WSDOT road network with 30 m tolerance:
-    #Copy transitbusroute_pro: _align
-    #Create rubbersheet links
-    #rubbersheet
-#rubbersheet results suck - 2h30
-
-#Alternative 2
-#Try integrating lines to WSDOT road network with 15 m tolerance:
-    #Copy -> PStransit_busroutes_proj_integrateWSDOT_15m_2
-#Integrating is crap for highways
-
-#Alternative 3
 arcpy.SplitLine_management(PStransitbus_proj, PStransitbus_proj + '_splitv')
 arcpy.FindIdentical_management(PStransitbus_proj + '_splitv', "explFindID", "Shape")
 arcpy.MakeFeatureLayer_management(PStransitbus_proj + '_splitv', "intlyr")
 arcpy.AddJoin_management("intlyr", arcpy.Describe("intlyr").OIDfieldName, "explFindID", "IN_FID", "KEEP_ALL")
-arcpy.Dissolve_management("intlyr", PStransitbus_proj + '_splitv_diss', dissolve_field='explFindID.FEAT_SEQ',
+arcpy.Dissolve_management("intlyr", PStransitbus_splitdiss, dissolve_field='explFindID.FEAT_SEQ',
                           statistics_fields=[[os.path.split(PStransitbus_proj)[1] + '_splitv.adjustnum_int', 'SUM']])
-arcpy.RepairGeometry_management(PStransitbus_proj + '_splitv_diss', delete_null = 'DELETE_NULL') #sometimes creates empty geom
+arcpy.RepairGeometry_management(PStransitbus_splitdiss, delete_null = 'DELETE_NULL') #sometimes creates empty geom
 tolerance = (2.0**0.5)*float(res.getOutput(0))/2 #length of half pixel diagonal
-explodeOverlaps(PStransitbus_proj + '_splitv_diss', tolerance)
+ExplodeOverlappingLines(PStransitbus_splitdiss, tolerance)
 
-
-#       For each shape, create its own raster. An alternative would follow those lines:
-#       https://gis.stackexchange.com/questions/32217/exploding-overlapping-to-new-non-overlapping-polygons
-IDf = arcpy.Describe(PStransitbus).OIDFieldName
+#For each set of non-overlapping lines, create its own raster
+tilef = 'expl'
+tilelist = list(set([row[0] for row in arcpy.da.SearchCursor(PStransitbus_splitdiss, [tilef])]))
 outras_base = path.join(rootdir, 'results/transit.gdb/busnum_')
 arcpy.env.snapRaster = template_ras
-with arcpy.da.SearchCursor(PStransitbus, ['OID@']) as cursor:
-    for row in cursor:
-        outras = outras_base + str(row[0])
-        if not arcpy.Exists(outras):
-            print('{0} = {1}'.format(IDf, row[0]))
-            arcpy.MakeFeatureLayer_management(PStransitbus, 'bus_lyr', where_clause= '{0} = {1}'.format(IDf, row[0]))
-            arcpy.PolylineToRaster_conversion('bus_lyr', value_field='adjustnum_int', out_rasterdataset=outras, cellsize=res)
+for tile in tilelist:
+    outras = outras_base + str(tile)
+    if not arcpy.Exists(outras):
+        selexpr = '{0} = {1}'.format(tilef, tile)
+        print(selexpr)
+        arcpy.MakeFeatureLayer_management(PStransitbus_splitdiss, 'bus_lyr', where_clause= selexpr)
+        arcpy.PolylineToRaster_conversion('bus_lyr', value_field='adjustnum_int', out_rasterdataset=outras, cellsize=res)
+
 #Mosaic to new raster
 arcpy.env.workspace = os.path.split(outras_base)[0]
 transitras_tiles = arcpy.ListRasters('busnum_*')
 arcpy.MosaicToNewRaster_management(transitras_tiles, arcpy.env.workspace, os.path.split(PStransitras)[1],
-                                   number_of_bands= 1, mosaic_method = 'SUM')
-# for tile in transitras_tiles:
-#     arcpy.Delete_management(tile)
+                                   pixel_type='32_BIT_UNSIGNED', number_of_bands= 1, mosaic_method = 'SUM')
+for tile in transitras_tiles:
+    print('Deleting {}...'.format(tile))
+    arcpy.Delete_management(tile)
 arcpy.ClearEnvironment('Workspace')
 
 #-----------------------------------------------------------------------------------------------------------------------
@@ -447,28 +435,31 @@ arcpy.AddJoin_management('osmroads', 'osm_id', rangetab19, 'osm_id')
 arcpy.AddJoin_management('osmroads', 'osm_id', rangetab13, 'osm_id')
 arcpy.AddJoin_management('osmroads', 'osm_id', rangetab19_smooth, 'osm_id')
 arcpy.AddJoin_management('osmroads', 'osm_id', rangetab13_smooth, 'osm_id')
-arcpy.CopyFeatures_management('osmroads', PSOSM_elv)
+arcpy.CopyFeatures_management('osmroads', PSOSM_elv) #Often stays stuck in Python
+
+arcpy.AlterField_management(PSOSM_elv, 'RANGE', 'RANGE19', 'RANGE19')
+arcpy.AlterField_management(PSOSM_elv, 'RANGE_1', 'RANGE13', 'RANGE13')
+arcpy.AlterField_management(PSOSM_elv, 'RANGE_12', 'RANGE19smooth', 'RANGE19smooth')
+arcpy.AlterField_management(PSOSM_elv, 'RANGE_12_13', 'RANGE13smooth', 'RANGE13smooth')
 
 ########
 arcpy.AddField_management(PSOSM_elv, 'gradient19', 'FLOAT')
 arcpy.AddField_management(PSOSM_elv, 'gradient13', 'FLOAT')
 arcpy.AddField_management(PSOSM_elv, 'gradient19_smooth', 'FLOAT')
 arcpy.AddField_management(PSOSM_elv, 'gradient13_smooth', 'FLOAT')
-arcpy.CalculateField_management(PSOSM_elv, 'gradient19', '!!/!L')
-arcpy.CalculateField_management(PSOSM_elv, 'gradient19', '!!/!L')
-arcpy.CalculateField_management(PSOSM_elv, 'gradient19', '!!/!L')
-arcpy.CalculateField_management(PSOSM_elv, 'gradient19', '!!/!L')
-
+arcpy.CalculateField_management(PSOSM_elv, 'gradient19', '!RANGE19!/!Shape_Length!', 'PYTHON')
+arcpy.CalculateField_management(PSOSM_elv, 'gradient13', '!RANGE13!/!Shape_Length!', 'PYTHON')
+arcpy.CalculateField_management(PSOSM_elv, 'gradient19_smooth', '!RANGE19smooth!/!Shape_Length!', 'PYTHON')
+arcpy.CalculateField_management(PSOSM_elv, 'gradient13_smooth', '!RANGE13smooth!/!Shape_Length!', 'PYTHON')
 
 #Compare to Seattle roads slope values. See whether 1/3 arc-sec is just less precise or also bias compared to 19
+SpatialJoinLines_LargestOverlap(target_features=PSOSM_elv, join_features=roads,
+                                out_fc=PSOSM_elv + 'Seattlejoin', outgdb=PSgdb, bufsize='10 meters', keep_all=True,
+                                fields_select=['SLOPE_PCT', 'ARTDESCRIP'])
 
-
-
-
-
-
-
-
+############# TO DO:
+# Fill in and adjust values for those roads outside of NED 1/9 extent
+#############
 
 ########################################################################################################################
 # CREATE HEATMAPS
@@ -496,22 +487,17 @@ arcpy.PolylineToRaster_conversion(PSOSM_allproj, value_field='fclassADT', out_ra
 customheatmap(kernel_dir=path.join(rootdir, 'results/bing'), in_raster=OSM_AADT,
               out_gdb = PSgdb, out_var='OSMAADT', divnum=100, keyw='')
 
+#Bus transit
+customheatmap(kernel_dir=path.join(rootdir, 'results/bing'), in_raster=PStransitras,
+              out_gdb = path.join(rootdir, 'results/transit.gdb'), out_var='bustransit', divnum=100, keyw='log200')
 
-########################################################################################################################
-#######                     STILL TO CHECK AND RUN                                                           ###########
-########################################################################################################################
-#Bing See src/Bing_format.py
-arcpy.CopyRaster_management('heat_bing_int', path.join(rootdir, 'results/heatbing_int'))
-arcpy.CopyRaster_management('heat_bing_index', path.join(rootdir, 'results/heat_bing_index'))
-
-#Get overall distribution of values in rasters
-arcpy.BuildRasterAttributeTable_management('heatAADTlog100')
-arcpy.BuildRasterAttributeTable_management('heat_spdlm_int')
-arcpy.BuildRasterAttributeTable_management('heat_bing_int')
-arcpy.CopyRows_management('heatAADTlog100',  path.join(rootdir, 'results/heat_AADT.dbf'))
-arcpy.CopyRows_management('heat_spdlm_int',  path.join(rootdir, 'results/heat_spdlm.dbf'))
-arcpy.CopyRows_management('heat_bing_int',  path.join(rootdir, 'results/heat_bing.dbf'))
-
+############################################################################################################################
+################################  TO DO:
+#Road gradient
+arcpy.PolylineToRaster_conversion(PSOSM_elv, value_field='gradient##', out_rasterdataset=OSM_gradient,
+                                  priority_field='fclassADT', cellsize=res)
+customheatmap(kernel_dir=path.join(rootdir, 'results/bing'), in_raster=OSM_gradient,
+              out_gdb = PSgdb, out_var='OSMgradient', divnum=100, keyw='log[12]00')
 
 ########################################################################################################################
 # GET TREES HEATMAP VALUES
@@ -520,10 +506,18 @@ arcpy.CopyRows_management('heat_bing_int',  path.join(rootdir, 'results/heat_bin
 ########################################################################################################################
 #Project
 arcpy.Project_management(trees, 'trees_proj', UTM10)
-#Get values
-ExtractMultiValuesToPoints('trees_proj', ['heat_AADT','heat_spdlm','heat_bing_proj'], bilinear_interpolate_values='BILINEAR') #Initial set of values used to design sampling
-ExtractMultiValuesToPoints('trees_proj', arcpy.ListRasters('heatAADT*'), bilinear_interpolate_values='BILINEAR')
-ExtractMultiValuesToPoints('trees_proj', arcpy.ListRasters('heat_bing*'), bilinear_interpolate_values='BILINEAR')
+#Get heat values for all trees
+heatlist = []
+arcpy.env.workspace = PSgdb
+heatlist.extend([path.join(PSgdb, r) for r in arcpy.ListRasters('heat*') if path.join(PSgdb, r) not in heatlist])
+arcpy.env.workspace = gdb
+heatlist.extend([path.join(gdb, r) for r in arcpy.ListRasters('heat*') if path.join(gdb, r) not in heatlist])
+arcpy.env.workspace = Binggdb
+heatlist.extend([path.join(Binggdb, r) for r in arcpy.ListRasters('heat*') if path.join(Binggdb, r) not in heatlist])
+arcpy.ClearEnvironment('workspace')
+
+ExtractMultiValuesToPoints('trees_proj', heatlist, bilinear_interpolate_values='BILINEAR')
+
 #Get zoning
 arcpy.Project_management(zoning, 'zoning_proj', UTM10)
 arcpy.SpatialJoin_analysis('trees_proj', 'zoning_proj', 'trees_zoning', join_operation='JOIN_ONE_TO_ONE', match_option='WITHIN')
@@ -533,10 +527,7 @@ arcpy.SpatialJoin_analysis('trees_zoning', 'Tract_2010Census_proj', 'trees_zonin
 
 ########################################################################################################################
 # EXPORT DATA
-#Export table
-arcpy.CopyRows_management('trees_zoning_census', out_table=path.join(rootdir, 'results/trees_tab.dbf'))
-arcpy.CopyRows_management('trees_zoning_census', out_table=path.join(rootdir, 'results/trees_tab.csv'))
-
+########################################################################################################################
 #Export NLCD data to Puget Sound scale
 arcpy.CopyRaster_management(NLCD_reclass, NLCD_reclass_PS)
 #Export NLCD impervious data
@@ -545,5 +536,3 @@ imp.save(NLCD_imp_PS)
 #Compute focal stats
 imp_mean = arcpy.sa.FocalStatistics(NLCD_imp_PS, neighborhood = NbrCircle(3, "CELL"), statistics_type= 'MEAN')
 imp_mean.save(NLCD_imp_PS + '_mean.tif')
-
-#Check datasets have 'road gradient', otherwise, compute it and compare it to known gradients
