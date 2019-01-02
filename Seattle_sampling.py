@@ -23,7 +23,7 @@ arcpy.env.overwriteOutput=True
 arcpy.env.qualifiedFieldNames = False
 
 #Set up paths
-rootdir = 'C:/Mathis/ICSL/stormwater/'
+rootdir = 'F:/Levin_Lab/stormwater/'
 
 roads = path.join(rootdir, 'data/CitySeattle_20180601/Seattle_Streets/Seattle_Streets.shp')
 traffic_seattle = path.join(rootdir, 'data/CitySeattle_20180601/2016_Traffic_Flow_Counts/2016_Traffic_Flow_Counts.shp')
@@ -507,14 +507,16 @@ customheatmap(kernel_dir=path.join(rootdir, 'results/bing'), in_raster=OSM_gradi
 #Project
 arcpy.Project_management(trees, 'trees_proj', UTM10)
 #Get heat values for all trees
-heatlist = []
-arcpy.env.workspace = PSgdb
-heatlist.extend([path.join(PSgdb, r) for r in arcpy.ListRasters('heat*') if path.join(PSgdb, r) not in heatlist])
-arcpy.env.workspace = gdb
-heatlist.extend([path.join(gdb, r) for r in arcpy.ListRasters('heat*') if path.join(gdb, r) not in heatlist])
-arcpy.env.workspace = Binggdb
-heatlist.extend([path.join(Binggdb, r) for r in arcpy.ListRasters('heat*') if path.join(Binggdb, r) not in heatlist])
-arcpy.ClearEnvironment('workspace')
+def Iter_ListRaster(workspaces, wildcard):
+    outlist = []
+    for ws in workspaces:
+        arcpy.env.workspace = ws
+        rlist = arcpy.ListRasters(wildcard)
+        if rlist is not None:
+            outlist.extend([path.join(ws, r) for r in rlist if path.join(ws, r) not in outlist])
+    return outlist
+
+heatlist = Iter_ListRaster([PSgdb, gdb, Binggdb], 'heat*')
 
 ExtractMultiValuesToPoints('trees_proj', heatlist, bilinear_interpolate_values='BILINEAR')
 
