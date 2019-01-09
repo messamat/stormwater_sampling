@@ -210,5 +210,6 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
 
     if keep == False:
         print('Deleting intermediate outputs...')
-        for inter_lyr in ['routes', 'trips', 'calendar', newfc, newfc_lines]:
+        for inter_lyr in ['routes', 'trips', 'calendar', 'trips_routes_calendar',
+                          'trips_routes_count', out_fc, newfc, newfc_lines]:
             arcpy.Delete_management(inter_lyr)
