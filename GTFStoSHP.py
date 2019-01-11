@@ -30,13 +30,22 @@ import zipfile
 import logging
 from collections import defaultdict
 from datetime import datetime
-import fileinput
 
 arcpy.env.overwriteOutput=True
 arcpy.env.qualifiedFieldNames = False
 
+#--------------------------------------------------------------
+# FOR TROUBLESHOOTING
+# rootdir = 'C:/Mathis/ICSL/stormwater/'
+# gtfs_dir = os.path.join(rootdir, 'data\\TransitWiki201812\\mason-wa-us.zip') #clallam_google_transit.zip # island-transit-wa-us.zip
+# out_gdb = os.path.join(rootdir, 'results/transit.gdb')
+# out_fc = 'mason_wa_us' #island_transit_wa_us
+# current = True
+# keep = False
 # outdir = os.path.split(gtfs_dir)[0]
-# infile = os.path.join(outdir,'trips.txt')
+# infile = os.path.join(outdir,'calendar.txt')
+#--------------------------------------------------------------
+
 def format_schema_import(infile, outdir):
     filebase = os.path.split(infile)[1]
 
@@ -51,9 +60,9 @@ def format_schema_import(infile, outdir):
         fname = txtH[i]
         #If ID field in text file
         if fname in idfields:
-            print(fname)
+            #print(fname)
             maxflen = max([len(l.replace('\n', '').split(',')[i]) for l in txtF]) #maximum length of id field
-            schema_header = '\n[{0}]\nFormat=CSVDelimited\nColNameHeader=True'.format(filebase)
+            schema_header = '[{0}]\nFormat=CSVDelimited\nColNameHeader=True'.format(filebase)
             schema_addline = '\nCol{0}={1} Text Width {2}'.format(i + 1, fname, maxflen)
 
             #If a schema file already exists
@@ -63,32 +72,35 @@ def format_schema_import(infile, outdir):
                     allines = ('').join(schemaF)
 
                 postfile_regex = '[[]{}[]](?s).*(?=[[]|$)'.format(filebase)
-                col_regex = 'Col{0}.*(?=\n)'.format(i + 1)
+                col_regex = 'Col{0}.*(?=\n|$)'.format(i + 1)
 
-                if re.compile(postfile_regex).search(allines):  # If txt file already in schema ini
+                # If txt file already in schema ini
+                if re.compile(postfile_regex).search(allines):
                     ftxt = re.compile(postfile_regex).search(allines).group()
 
                     with open(os.path.join(outdir, 'schema.ini'), 'w') as schematxt:
-                        if re.compile(col_regex).search(ftxt): #If column in schema ini
+                        # If column in schema ini
+                        if re.compile(col_regex).search(ftxt):
                             part_rep = re.sub(col_regex, 'Col{0}={1} Text Width {2}'.format(i + 1, fname, maxflen), ftxt)
                             full_rep = re.sub(postfile_regex, part_rep, allines)
 
                         else: #If column not in schema ini
-                            full_rep = re.sub(postfile_regex, ftxt + schema_addline, allines)
+                            full_rep = re.sub(postfile_regex, '{0}{1}'.format(ftxt, schema_addline), allines)
 
                         schematxt.write(full_rep)
 
                 else: #If txt file not already in schema ini
                     with open(os.path.join(outdir, 'schema.ini'), 'a') as schematxt:
-                        schematxt.write(schema_header + schema_addline)
+                        schematxt.write('\n{0}{1}'.format(schema_header, schema_addline))
 
             #If a schema file doesn't already exist
             else:
                 with open(os.path.join(outdir, "schema.ini"), "w") as schematxt:
-                    schematxt.write(schema_header + schema_addline)
+                    schematxt.write('{0}{1}'.format(schema_header, schema_addline))
 
-def delete_intoutput(outdir, ziplist, intlist) :
+def delete_intoutput(dir, ziplist, intlist) :
     print('Deleting intermediate outputs...')
+    os.remove(os.path.join(dir, 'schema.ini'))
     for file in ziplist:  # Delete zipped out files
         os.remove(os.path.join(dir, file))
     for inter_lyr in intlist:  # Delete intermediate GIS layers
@@ -216,6 +228,8 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
             cal_fields = ['service_id',  'start_date','end_date', 'normalnum', #0, 1, 2, 3
                           'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', #4-10
                           'date_added', 'date_removed', 'date_weekavg', 'adjustnum', 'service_len'] #11, 12, 13, 14, 15
+            #fl = [f.name for f in arcpy.ListFields('calendar')]
+            #[cf for cf in cal_fields if cf not in fl]
 
             with arcpy.da.UpdateCursor('calendar', cal_fields) as cursor:
                 for row in cursor:
@@ -265,7 +279,10 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
             arcpy.AddJoin_management('shapes_lyr', 'shape_id', 'trips_routes_count', 'shape_id')
             arcpy.CopyFeatures_management('shapes_lyr', out_fc + '_routes')
 
-            for inter_lyr in ['trips_view', 'shapes_lyr', ]:  # Delete intermediate GIS layers
+            # -------------------------------------------------------------------------------------------------------------------
+            # DELETE INTERMEDIATE STUFF
+            # -------------------------------------------------------------------------------------------------------------------
+            for inter_lyr in ['trips_view', 'shapes_lyr']:  # Delete intermediate GIS layers
                 try:
                     arcpy.Delete_management(inter_lyr)
                 except Exception as e:
@@ -281,6 +298,7 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
         #If an error is raised, delete intermediate outputs if keep == False
         except Exception as e:
             print(e)
+            logging.error(e)
             if keep == False:
                 delete_intoutput(dir = gtfs_rootdir, ziplist = zipfilelist,
                                  intlist = ['routes', 'trips', 'trips_view', 'calendar', 'shapes_lyr',
@@ -288,10 +306,4 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
     else:
         raise Exception("{} does not exist or is not a directory or zip file".format(gtfs_dir))
 
-# rootdir = 'C:/Mathis/ICSL/stormwater/'
-# gtfs_dir = os.path.join(rootdir, 'data\\TransitWiki201812\\wta_gtfs_latest.zip') #clallam_google_transit.zip # island-transit-wa-us.zip
-# out_gdb = os.path.join(rootdir, 'results/transit.gdb')
-# out_fc = 'wta_gtfs_latest' #island_transit_wa_us
-# current = True
-# keep = False
-#GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=True)
+# GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False)
