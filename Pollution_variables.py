@@ -107,6 +107,8 @@ PStransitbus_proj = PStransit + '_busroutes_proj'
 PStransitbus_splitdiss = PStransitbus_proj + '_splitv_diss'
 PStransitras = os.path.join(rootdir, 'results/transit.gdb/PStransit_ras')
 
+XRFsites_proj = os.path.join(gdb, 'XRFsites_proj')
+
 ########################################################################################################################
 # PREPARE VARIABLES TO CREATE HEATMAPS: FUNCTIONAL-CLASS BASED AADT AND SPEED LIMIT, SLOPE, AND TRANSIT ROUTES
 ########################################################################################################################
@@ -360,6 +362,18 @@ with arcpy.da.UpdateCursor(PSOSM_elv, ['gradient_composite','gradient19_smooth',
         cursor.updateRow(row)
 
 ########################################################################################################################
+# PREPARE LAND USE DATA
+########################################################################################################################
+#Export NLCD data to Puget Sound scale
+arcpy.env.extent = PSwatershed
+arcpy.ProjectRaster_management(NLCD_reclass, NLCD_reclass_PS, UTM10, resampling_type='NEAREST')
+#Export NLCD impervious data
+#NLCD_imp = "D:\ICSL\stormwater\data\\nlcd_2011_impervious_2011_edition_2014_10_10\\nlcd_2011_impervious_2011_edition_2014_10_10.img"
+arcpy.ProjectRaster_management(NLCD_imp, NLCD_imp_PS, UTM10, resampling_type='BILINEAR')
+#Compute focal stats
+imp_mean = arcpy.sa.FocalStatistics(NLCD_imp_PS, neighborhood = NbrCircle(3, "CELL"), statistics_type= 'MEAN')
+imp_mean.save(NLCD_imp_PS + '_mean.tif')
+########################################################################################################################
 # CREATE HEATMAPS
 # of speedlimit(for Seattle), raw AADT (for Seattle), functional class-based  AADT (for Puget Sound) and
 # BING (see Bing_format.py)
@@ -389,17 +403,17 @@ customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=OSM_AA
 arcpy.PolylineToRaster_conversion(PSOSM_allproj, value_field='fclassSPD', out_rasterdataset=OSM_SPD,
                                   priority_field='fclassSPD',cellsize=res)
 customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=OSM_SPD,
-              out_gdb = PSgdb, out_var='OSMSPD', divnum=100, keyw='log[12]00')
+              out_gdb = PSgdb, out_var='OSMSPD', divnum=100, keyw='log[2]00')
 
 #Bus transit
 customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=PStransitras,
-              out_gdb = os.path.join(rootdir, 'results/transit.gdb'), out_var='bustransit', divnum=100, keyw='log300')
+              out_gdb = os.path.join(rootdir, 'results/transit.gdb'), out_var='bustransit', divnum=100, keyw='log500')
 
 #Road gradient
 arcpy.PolylineToRaster_conversion(PSOSM_elv, value_field='gradient_composite', out_rasterdataset=OSM_gradient,
                                   priority_field='fclassADT', cellsize=res)
 customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=OSM_gradient,
-              out_gdb = PSgdb, out_var='OSMgradient', divnum=1, keyw='log[12]00')
+              out_gdb = PSgdb, out_var='OSMgradient', divnum=0.01, keyw='log[123]00')
 
 ########################################################################################################################
 # GET TREES HEATMAP VALUES
@@ -407,8 +421,7 @@ customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=OSM_gr
 # location
 ########################################################################################################################
 #Project
-arcpy.Project_management(XRFsites, 'XRFsites_proj', UTM10)
-
+arcpy.Project_management(XRFsites, XRFsites_proj, UTM10)
 #Get heat values for all trees
 def Iter_ListRaster(workspaces, wildcard):
     outlist = []
@@ -417,15 +430,18 @@ def Iter_ListRaster(workspaces, wildcard):
         rlist = arcpy.ListRasters(wildcard)
         if rlist is not None:
             outlist.extend([os.path.join(ws, r) for r in rlist if os.path.join(ws, r) not in outlist])
+    arcpy.ClearEnvironment('Workspace')
     return outlist
 
-heatlist = Iter_ListRaster([PSgdb, gdb, Binggdb], 'heat*')
+heatlist = Iter_ListRaster([PSgdb, gdb, os.path.join(rootdir, 'results/transit.gdb'), Binggdb], 'heat*')
+heatlist2 = [f for f in heatlist if f != 'C:/Mathis/ICSL/stormwater\\results/PSOSM.gdb\\heatOSMSPDlog200'] + \
+    [NLCD_reclass_PS, NLCD_imp_PS, NLCD_imp_PS + '_mean.tif']
 
-ExtractMultiValuesToPoints('XRFsites_proj', heatlist, bilinear_interpolate_values='BILINEAR')
+ExtractMultiValuesToPoints(XRFsites_proj, heatlist2, bilinear_interpolate_values='BILINEAR')
 tempfix = 'C:/Users/install/Desktop/Seattle_sampling.gdb/XRFsites_proj'
-arcpy.JoinField_management('XRFsites_proj', 'OBJECTID', tempfix, 'OBJECTID',
+arcpy.JoinField_management(XRFsites_proj, 'OBJECTID', tempfix, 'OBJECTID',
                            [f.name for f in arcpy.ListFields(tempfix, '*bing*')])
-arcpy.AddGeometryAttributes_management('XRFsites_proj', 'POINT_X_Y_Z_M', Coordinate_System= arcpy.SpatialReference(4326))
+arcpy.AddGeometryAttributes_management(XRFsites_proj, 'POINT_X_Y_Z_M', Coordinate_System= arcpy.SpatialReference(4326))
 
 #Get zoning
 arcpy.Project_management(zoning, 'zoning_proj', UTM10)
@@ -433,15 +449,3 @@ arcpy.SpatialJoin_analysis('trees_proj', 'zoning_proj', 'trees_zoning', join_ope
 #Get census data
 arcpy.Project_management(censustract, 'Tract_2010Census_proj', UTM10)
 arcpy.SpatialJoin_analysis('trees_zoning', 'Tract_2010Census_proj', 'trees_zoning_census', join_operation='JOIN_ONE_TO_ONE', match_option='WITHIN')
-
-########################################################################################################################
-# EXPORT DATA
-########################################################################################################################
-#Export NLCD data to Puget Sound scale
-arcpy.CopyRaster_management(NLCD_reclass, NLCD_reclass_PS)
-#Export NLCD impervious data
-imp = arcpy.sa.ExtractByMask(NLCD_imp, PSwatershed)
-imp.save(NLCD_imp_PS)
-#Compute focal stats
-imp_mean = arcpy.sa.FocalStatistics(NLCD_imp_PS, neighborhood = NbrCircle(3, "CELL"), statistics_type= 'MEAN')
-imp_mean.save(NLCD_imp_PS + '_mean.tif')
