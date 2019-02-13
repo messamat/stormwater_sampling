@@ -373,6 +373,7 @@ arcpy.ProjectRaster_management(NLCD_imp, NLCD_imp_PS, UTM10, resampling_type='BI
 #Compute focal stats
 imp_mean = arcpy.sa.FocalStatistics(NLCD_imp_PS, neighborhood = NbrCircle(3, "CELL"), statistics_type= 'MEAN')
 imp_mean.save(NLCD_imp_PS + '_mean.tif')
+
 ########################################################################################################################
 # CREATE HEATMAPS
 # of speedlimit(for Seattle), raw AADT (for Seattle), functional class-based  AADT (for Puget Sound) and
@@ -434,10 +435,10 @@ def Iter_ListRaster(workspaces, wildcard):
     return outlist
 
 heatlist = Iter_ListRaster([PSgdb, gdb, os.path.join(rootdir, 'results/transit.gdb'), Binggdb], 'heat*')
-heatlist2 = [f for f in heatlist if f != 'C:/Mathis/ICSL/stormwater\\results/PSOSM.gdb\\heatOSMSPDlog200'] + \
-    [NLCD_reclass_PS, NLCD_imp_PS, NLCD_imp_PS + '_mean.tif']
+heatlist2 = heatlist + [NLCD_imp_PS, NLCD_imp_PS + '_mean.tif']
 
 ExtractMultiValuesToPoints(XRFsites_proj, heatlist2, bilinear_interpolate_values='BILINEAR')
+ExtractMultiValuesToPoints(XRFsites_proj, NLCD_reclass_PS, bilinear_interpolate_values='NONE')
 tempfix = 'C:/Users/install/Desktop/Seattle_sampling.gdb/XRFsites_proj'
 arcpy.JoinField_management(XRFsites_proj, 'OBJECTID', tempfix, 'OBJECTID',
                            [f.name for f in arcpy.ListFields(tempfix, '*bing*')])
