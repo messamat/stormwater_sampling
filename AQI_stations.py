@@ -21,6 +21,12 @@ AQIdir = os.path.join(rootdir, 'data/EPA_AirData_201902')
 monitors = pd.read_csv(os.path.join(AQIdir, 'aqs_monitors/aqs_monitors.csv'))
 sites = pd.read_csv(os.path.join(AQIdir, 'aqs_sites/aqs_sites.csv'))
 
+#Output variables
+outdir = os.path.join(rootdir, 'results/airdata')
+if not os.path.isdir(outdir):
+    os.mkdir(outdir)
+sites_out = os.path.join(outdir, 'airsites.shp')
+sites_outbuf = os.path.join(outdir, 'airsites_600buf.shp')
 #-----------------------------------------------------------------------------------------------------------------------
 # SELECT SITES THAT RECORD CHEMICAL CONCENTRATIONS
 #-----------------------------------------------------------------------------------------------------------------------
@@ -54,7 +60,7 @@ len(sites_chem)
 len(pd.unique(sites_chem['UID'])) #Most sites are unique
 
 #-----------------------------------------------------------------------------------------------------------------------
-# CREATE SHAPEFILE AND BUFFER
+# CREATE POINT SHAPEFILE AND BUFFER
 #-----------------------------------------------------------------------------------------------------------------------
 sites_chem.groupby('Datum')['UID'].nunique() #Check what datums data are in
 
@@ -72,11 +78,21 @@ sites_nad83 = pdtogpd_datum(sites_chem, 'NAD83')
 
 sites_chem['Longitude'].describe()
 
-
 #Project them all to esri projection 102003 - usa contiguous albers equal area conic
 #Spatial reference: http://spatialreference.org/ref/esri/usa-contiguous-albers-equal-area-conic/
 albers = "+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"
 sites_gpd = pd.concat([sites_wgs84.to_crs(albers),sites_nad27.to_crs(albers), sites_nad83.to_crs(albers)])
-#Remove outlier with lon=0
+#Remove outliers with lon=0
 sites_gpd['Longitude'].describe()
 sites_gpd = sites_gpd[sites_gpd['Longitude'] != 0]
+
+#Create 600 m radius buffers and dissolve them
+sites_buf = sites_gpd['geometry'].buffer(distance=600)
+sites_bufgpd = gpd.GeoDataFrame(sites_buf, crs=albers).rename(columns={0:'geometry'}).set_geometry('geometry')
+sites_bufgpd['diss'] = 1
+sites_bufdis = sites_bufgpd.dissolve(by='diss')
+
+#Output to shapefile
+sites_gpd.to_file(sites_out, driver = 'ESRI Shapefile')
+sites_bufdis.to_file(sites_outbuf, driver = 'ESRI Shapefile')
+
