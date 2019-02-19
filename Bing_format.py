@@ -4,25 +4,23 @@ import glob
 import re
 import time
 from os import *
-from arcpy.sa import *
+import arcpy
+from pathos.multiprocessing import ProcessPool
+from collections import defaultdict
 arcpy.CheckOutExtension("Spatial")
 arcpy.env.overwriteOutput=True
 
 #Set up paths
-rootdir = 'F:/Levin_Lab/stormwater/'
-res= path.join(rootdir, 'results/bing/')
+#rootdir = 'F:/Levin_Lab/stormwater/'
+rootdir = 'C:/Mathis/ICSL/stormwater'
+#res= path.join(rootdir, 'results/bing/')
+res = path.join(rootdir, 'results/airdata/tiles')
 arcpy.env.workspace=res
-mlclist = [filenames for (dirpath, dirnames, filenames) in walk(res)][0]
-regex=re.compile(".+mlc\.tif$")
-clasfiles = [m.group(0) for l in mlclist for m in [regex.search(l)] if m] #Look into this
-UTM10 = arcpy.SpatialReference(26910)
 
-#Bing logo masks
-logomask_odd = path.join(rootdir, 'results/boolean_logo.tif')
-logomask_even = path.join(rootdir, 'results/boolean_logoalt.tif')
+#UTM10 = arcpy.SpatialReference(26910)
 
 #Note that 180623_02_45 was deleted because too incomplete and 180625_22_45 is missing tiles (scheduled task crashed)
-gdb = path.join(rootdir,'results/bing/postprocess.gdb')
+gdb = path.join(rootdir,'results/airdata/postprocess.gdb')
 if arcpy.Exists(gdb):
     print('Geodatabase already exists')
 else:
@@ -39,25 +37,41 @@ bingclean_even = path.join(res, 'bingcleanev')
 bingclean_mean = path.join(gdb, 'bingcleanmea')
 bingeuc = path.join(res, 'bingeuc')
 
-#Reclassify (2 min/hourly image when out of a gdb, then 8 minutes when using gdb?)
-arcpy.env.workspace= gdb
-if not arcpy.ListRasters('reclas_*'):
-    remap = RemapValue([[1, 0], [2, 0], [3, 0], [4, 0], [5, 2], [6, 3], [7, 0], [8, 1],['NODATA',0]])
-    for f in clasfiles:
-        t0 = time.time()
-        print(f)
-        outf = path.join(gdb, 'reclas_{}'.format(f[:-14]))
-        if arcpy.Exists(outf):
-            print('{} already exists'.format(outf))
-        else:
-            outReclass = Reclassify(path.join(res, f), 'Value', remap, "DATA")
-            outReclass.save(outf)
-        print(time.time() - t0)
 
 #Create list of layers for odd and even hours to remove bing logo
-reclasfiles = arcpy.ListRasters('reclas_*')
-oddclasfiles = [path.join(gdb, f) for f in reclasfiles if (int(f[14:16]) % 2 > 0)]
-evenclasfiles = [path.join(gdb, f) for f in reclasfiles if (int(f[14:16]) % 2 == 0)]
+mlclist = arcpy.ListRasters('*tif')
+oddclasfiles = [path.join(res, f) for f in mlclist if (int(f[7:9]) % 2 > 0)]
+evenclasfiles = [path.join(res, f) for f in mlclist  if (int(f[7:9]) % 2 == 0)]
+
+# for tile in evenclasfiles:
+#     print(tile)
+#     for i in range(28,39):
+#         arcpy.CopyRaster_management(tile, tile.replace('16',str(i)))
+
+tileset = defaultdict(list)
+for i in evenclasfiles+oddclasfiles:
+    tileset[path.split(i)[1][13:22]].append(i)
+
+ntiles = max([len(v) for v in tileset.values()])
+def bingmean(tile, N=ntiles):
+    bingmean = arcpy.sa.Float(arcpy.sa.CellStatistics(tileset[tile], statistics_type='SUM', ignore_nodata='DATA')) / N
+    bingmean.save(path.join(res, 'mean{}'.format(tile)))
+tilesetk = tileset.keys()
+
+
+tic = time.time()
+p = ProcessPool(nodes=4)
+p.map(bingmean, tilesetk)
+p.close
+# for tile in tileset:
+#     print(tile)
+#     bingmean(tile, 10)
+print(time.time()-tic)
+
+
+#53 tiles, 22 layers - 122s - with multiprocessing: 56s (56/(53*22))=0.048027 #see parallel_test2.py
+#1500 tiles, 168 layers - 1500*168*0.048027=12103/3600 = 3.5 h
+
 
 #Compute mean across time for even and odd hours separately - 5h for a week of data
 t0 = time.time()
