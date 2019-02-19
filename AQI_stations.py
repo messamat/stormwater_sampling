@@ -27,6 +27,8 @@ if not os.path.isdir(outdir):
     os.mkdir(outdir)
 sites_out = os.path.join(outdir, 'airsites.shp')
 sites_outbuf = os.path.join(outdir, 'airsites_600buf.shp')
+sites_outbufdis = os.path.join(outdir, 'airsites_600bufdis.shp')
+sites_outbufunion = os.path.join(outdir, 'airsites_600bufunion.shp')
 #-----------------------------------------------------------------------------------------------------------------------
 # SELECT SITES THAT RECORD CHEMICAL CONCENTRATIONS
 #-----------------------------------------------------------------------------------------------------------------------
@@ -89,10 +91,17 @@ sites_gpd = sites_gpd[sites_gpd['Longitude'] != 0]
 #Create 600 m radius buffers and dissolve them
 sites_buf = sites_gpd['geometry'].buffer(distance=600)
 sites_bufgpd = gpd.GeoDataFrame(sites_buf, crs=albers).rename(columns={0:'geometry'}).set_geometry('geometry')
+
+#Dissolve all
 sites_bufgpd['diss'] = 1
 sites_bufdis = sites_bufgpd.dissolve(by='diss')
 
+#Dissolve only overlapping buffers
+sites_bufunion = gpd.GeoDataFrame([polygon for polygon in sites_bufgpd.unary_union], crs=albers). \
+    rename(columns={0:'geometry'}).set_geometry('geometry')
+
 #Output to shapefile
 sites_gpd.to_file(sites_out, driver = 'ESRI Shapefile')
-sites_bufdis.to_file(sites_outbuf, driver = 'ESRI Shapefile')
-
+sites_bufgpd.to_file(sites_outbuf, driver = 'ESRI Shapefile')
+sites_bufdis.to_file(sites_outbufdis, driver = 'ESRI Shapefile')
+sites_bufunion.to_file(sites_outbufunion, driver = 'ESRI Shapefile')
