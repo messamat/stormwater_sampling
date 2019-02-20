@@ -40,66 +40,7 @@ bingeuc = path.join(res, 'bingeuc')
 
 #Create list of layers for odd and even hours to remove bing logo
 mlclist = arcpy.ListRasters('*tif')
-oddclasfiles = [path.join(res, f) for f in mlclist if (int(f[7:9]) % 2 > 0)]
-evenclasfiles = [path.join(res, f) for f in mlclist  if (int(f[7:9]) % 2 == 0)]
 
-# for tile in evenclasfiles:
-#     print(tile)
-#     for i in range(28,39):
-#         arcpy.CopyRaster_management(tile, tile.replace('16',str(i)))
-
-tileset = defaultdict(list)
-for i in evenclasfiles+oddclasfiles:
-    tileset[path.split(i)[1][13:22]].append(i)
-
-ntiles = max([len(v) for v in tileset.values()])
-def bingmean(tile, N=ntiles):
-    bingmean = arcpy.sa.Float(arcpy.sa.CellStatistics(tileset[tile], statistics_type='SUM', ignore_nodata='DATA')) / N
-    bingmean.save(path.join(res, 'mean{}'.format(tile)))
-tilesetk = tileset.keys()
-
-
-tic = time.time()
-p = ProcessPool(nodes=4)
-p.map(bingmean, tilesetk)
-p.close
-# for tile in tileset:
-#     print(tile)
-#     bingmean(tile, 10)
-print(time.time()-tic)
-
-
-#53 tiles, 22 layers - 122s - with multiprocessing: 56s (56/(53*22))=0.048027 #see parallel_test2.py
-#1500 tiles, 168 layers - 1500*168*0.048027=12103/3600 = 3.5 h
-
-
-#Compute mean across time for even and odd hours separately - 5h for a week of data
-t0 = time.time()
-arcpy.env.extent = "MAXOF"
-if not arcpy.Exists(bingmean_odd):
-    bingmean = CellStatistics(oddclasfiles, statistics_type='MEAN', ignore_nodata='DATA')
-    bingmean.save(bingmean_odd) #Saving to .tif within /bing does not work, saving to grid within F: works
-    print('Done averaging traffic for odd hours')
-if not arcpy.Exists(bingmean_even):
-    bingmean = CellStatistics(evenclasfiles, statistics_type='MEAN', ignore_nodata='DATA')
-    bingmean.save(bingmean_even)
-    print('Done averaging traffic for even hours')
-t1=time.time()
-print(t1-t0)
-
-#Compute mean for all days at 3 am to identify semi-permanent road closures
-if not arcpy.Exists(traffic3am_ras):
-    arcpy.env.extent = "MAXOF"
-    print('Produce 3 am traffic layer')
-    traffic3am_raslist = arcpy.ListRasters('reclas_*_03_00')
-    traffic3am_mean  = CellStatistics(traffic3am_raslist, statistics_type='MEAN', ignore_nodata='DATA')
-    traffic3am_mean.save(traffic3am_ras)
-if not arcpy.Exists(traffic2am_ras):
-    arcpy.env.extent = "MAXOF"
-    print('Produce 2 am traffic layer')
-    traffic2am_raslist = arcpy.ListRasters('reclas_*_02_00')
-    traffic2am_mean  = CellStatistics(traffic2am_raslist, statistics_type='MEAN', ignore_nodata='DATA')
-    traffic2am_mean.save(traffic2am_ras)
 
 #Clean out bing logo and road closure artefacts then run euclidean allocation on tiles
 arcpy.ResetEnvironments()

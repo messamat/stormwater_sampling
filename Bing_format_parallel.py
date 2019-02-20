@@ -1,4 +1,5 @@
 import multiprocessing
+from functools import partial
 import arcpy
 import os
 from collections import defaultdict
@@ -8,10 +9,9 @@ arcpy.env.overwriteOutput=True
 rootdir = 'C:/Mathis/ICSL/stormwater'
 res = os.path.join(rootdir, 'results/airdata/tiles')
 
-def bingmean(tile):
-    #, N
+def bingmean(tile, N):
     outname = os.path.split(tile[0])[1][13:22]
-    bingmean = arcpy.sa.Float(arcpy.sa.CellStatistics(tile, statistics_type='SUM', ignore_nodata='DATA')) / 22
+    bingmean = arcpy.sa.Float(arcpy.sa.CellStatistics(tile, statistics_type='SUM', ignore_nodata='DATA')) / N
     bingmean.save(os.path.join(res, 'mean{}.tif'.format(outname))) #DO NOT OUTPUT TO GRID IN PARALLEL
 
 if __name__ == '__main__':
@@ -31,6 +31,7 @@ if __name__ == '__main__':
     print('Launch parallel processing')
     tic = time.time()
     p = multiprocessing.Pool(4)
-    p.map(bingmean, tileset.values())  # , [ntiles]*len(tileset)
+    bingmean_partial = partial(bingmean, N=ntiles) #Set N parameter as constant
+    p.map(bingmean_partial, tileset.values())
     p.close()
     print(time.time() - tic)
