@@ -31,7 +31,7 @@ arcpy.env.overwriteOutput=True
 arcpy.env.qualifiedFieldNames = False
 
 #Set up paths
-rootdir = 'C:/Mathis/ICSL/stormwater'
+rootdir = 'F:/Levin_lab/stormwater'
 
 roads = os.path.join(rootdir, 'data/CitySeattle_20180601/Seattle_Streets/Seattle_Streets.shp')
 kingroads = os.path.join(rootdir, 'data/King_201806/Metro_Transportation_Network_TNET_in_King_County_for_Car_Mode__trans_network_car_line/'
@@ -403,17 +403,17 @@ customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=OSM_AA
 arcpy.PolylineToRaster_conversion(PSOSM_allproj, value_field='fclassSPD', out_rasterdataset=OSM_SPD,
                                   priority_field='fclassSPD',cellsize=res)
 customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=OSM_SPD,
-              out_gdb = PSgdb, out_var='OSMSPD', divnum=100, keyw='log[2]00')
+              out_gdb = gdb, out_var='SPD', divnum=100, keyw='log[3]00')
 
 #Bus transit
 customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=PStransitras,
-              out_gdb = os.path.join(rootdir, 'results/transit.gdb'), out_var='bustransit', divnum=100, keyw='log500')
+              out_gdb = os.path.join(rootdir, 'results/transit.gdb'), out_var='bustransit', divnum=100, keyw='log200')
 
 #Road gradient
 arcpy.PolylineToRaster_conversion(PSOSM_elv, value_field='gradient_composite', out_rasterdataset=OSM_gradient,
                                   priority_field='fclassADT', cellsize=res)
 customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=OSM_gradient,
-              out_gdb = PSgdb, out_var='OSMgradient', divnum=0.01, keyw='log[123]00')
+              out_gdb = PSgdb, out_var='OSMgradient', divnum=0.01, keyw='log300')
 
 ########################################################################################################################
 # GET TREES HEATMAP VALUES
@@ -437,7 +437,10 @@ heatlist = Iter_ListRaster([PSgdb, gdb, os.path.join(rootdir, 'results/transit.g
 heatlist2 = [f for f in heatlist if f != 'C:/Mathis/ICSL/stormwater\\results/PSOSM.gdb\\heatOSMSPDlog200'] + \
     [NLCD_reclass_PS, NLCD_imp_PS, NLCD_imp_PS + '_mean.tif']
 
-ExtractMultiValuesToPoints(XRFsites_proj, heatlist2, bilinear_interpolate_values='BILINEAR')
+arcpy.CopyFeatures_management(XRFsites_proj, os.path.join(rootdir, 'results/XRFsites_proj.shp'))
+ExtractMultiValuesToPoints(XRFsites_proj, heatlist, bilinear_interpolate_values='BILINEAR')
+
+
 tempfix = 'C:/Users/install/Desktop/Seattle_sampling.gdb/XRFsites_proj'
 arcpy.JoinField_management(XRFsites_proj, 'OBJECTID', tempfix, 'OBJECTID',
                            [f.name for f in arcpy.ListFields(tempfix, '*bing*')])
@@ -449,3 +452,58 @@ arcpy.SpatialJoin_analysis('trees_proj', 'zoning_proj', 'trees_zoning', join_ope
 #Get census data
 arcpy.Project_management(censustract, 'Tract_2010Census_proj', UTM10)
 arcpy.SpatialJoin_analysis('trees_zoning', 'Tract_2010Census_proj', 'trees_zoning_census', join_operation='JOIN_ONE_TO_ONE', match_option='WITHIN')
+
+########################################################################################################################
+########################################################################################################################
+#   IN DEVELOPMENT
+#CREATE HEATMAPS FOR AQI STATIONS AROUND US
+########################################################################################################################
+#Get buffer around AQI sites
+AQIsites_bufunion = os.path.join(rootdir, 'results/airdata/airsites_600bufunion.shp')
+AQIgdb = os.path.join(rootdir, 'results/airdata/AQI.gdb')
+#Create gdb for analysis
+if arcpy.Exists(AQIgdb):
+    print('Geodatabase already exists')
+else:
+    arcpy.CreateFileGDB_management(os.path.join(rootdir,'results/airdata'), 'AQI.gdb')
+
+#Merge OSM data for US
+USOSMdir = os.path.join(rootdir, 'data/OSM_20190220/')
+USOSMlist = []
+for (dirname, dirs, files) in os.walk(USOSMdir):
+   for filename in files:
+       if filename == 'gis_osm_roads_free_1.shp':
+           print(os.path.split(dirname)[1])
+           USOSMlist.append(os.path.join(dirname,filename))
+
+USOSM = os.path.join(AQIgdb, 'USOSM')
+arcpy.Merge_management(USOSMlist, USOSM)
+
+#Intersect roads with buffers
+OSMAQI =  os.path.join(AQIgdb, 'AQI_OSMinters')
+arcpy.Intersect_analysis([AQIsites_bufunion, USOSM], OSMAQI, join_attributes='ALL')
+
+#Get SPD and AADT medians for each fclass
+fclass_SPDADTmedian = pd.read_csv(os.path.join(rootdir, 'results/OSM_SPDADTmedian.csv'))
+
+#OSM AADT AND SPD (apply Puget Sound data for now — get US-wide data in the future)
+#Convert OSM functional categories to numbers
+arcpy.AddField_management(OSMAQI, 'fclassADT', 'LONG')
+arcpy.AddField_management(OSMAQI, 'fclassSPD', 'LONG')
+with arcpy.da.UpdateCursor(OSMAQI, ['fclass','fclassADT', 'fclassSPD']) as cursor:
+    for row in cursor:
+        if any(fclass_SPDADTmedian['first'].isin([row[0]])):
+            if row[0] in ['service','unclassified','unknown', 'living_street']: #Value for service and unclassified seem overestimated
+                row[1] = int(fclass_SPDADTmedian[fclass_SPDADTmedian['first'] == 'residential'].mean_ADT)
+            else:
+                row[1] = int(fclass_SPDADTmedian.loc[fclass_SPDADTmedian['first'] == row[0]].mean_ADT)
+
+            row[2] = int(fclass_SPDADTmedian.loc[fclass_SPDADTmedian['first'] == row[0]].mean_SPD)
+        else:
+            row[1]=0
+            row[2]=0
+        cursor.updateRow(row)
+
+#Project OSM data
+OSMAQIproj = os.path.join(AQIgdb, 'OSMAQIproj')
+arcpy.Project_management(OSMAQI, OSMAQIproj, out_coor_system=AQIsites_bufunion)

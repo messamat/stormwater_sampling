@@ -24,12 +24,14 @@ import os
 import re
 import time
 
-def customheatmap(kernel_dir, in_raster, out_gdb, out_var, divnum=1, keyw=''):
+def customheatmap(kernel_dir, in_raster, scratch_dir, out_gdb, out_var, divnum=1, keyw='', ext='', verbose=False):
     for kertxt in os.listdir(kernel_dir):
+        #arcpy.scratchWorkspace = scratch_dir
         if re.compile('kernel.*' + keyw).match(kertxt):
-            outext = 'heat{0}{1}'.format(out_var, os.path.splitext(kertxt)[0][7:])
+            outext = 'heat{0}{1}{2}'.format(out_var, os.path.splitext(kertxt)[0][7:], ext)
             if not arcpy.Exists(outext):
-                print(outext)
+                if verbose:
+                    print(outext)
                 tic = time.time()
                 kernel = arcpy.sa.NbrWeight(os.path.join(kernel_dir, kertxt))
                 heat_aadt = arcpy.sa.Int(
@@ -37,4 +39,5 @@ def customheatmap(kernel_dir, in_raster, out_gdb, out_var, divnum=1, keyw=''):
                                     ignore_nodata='DATA') / divnum + 0.5)
                 heat_aadt.save(os.path.join(out_gdb, outext))
                 toc = time.time()
-                print('Took {} s'.format(round(toc-tic)))
+                if verbose:
+                    print('Took {} s'.format(round(toc-tic)))
