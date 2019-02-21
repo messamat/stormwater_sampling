@@ -4,25 +4,23 @@ import glob
 import re
 import time
 from os import *
-from arcpy.sa import *
+import arcpy
+from pathos.multiprocessing import ProcessPool
+from collections import defaultdict
 arcpy.CheckOutExtension("Spatial")
 arcpy.env.overwriteOutput=True
 
 #Set up paths
-rootdir = 'F:/Levin_Lab/stormwater/'
-res= path.join(rootdir, 'results/bing/')
+#rootdir = 'F:/Levin_Lab/stormwater/'
+rootdir = 'C:/Mathis/ICSL/stormwater'
+#res= path.join(rootdir, 'results/bing/')
+res = path.join(rootdir, 'results/airdata/tiles')
 arcpy.env.workspace=res
-mlclist = [filenames for (dirpath, dirnames, filenames) in walk(res)][0]
-regex=re.compile(".+mlc\.tif$")
-clasfiles = [m.group(0) for l in mlclist for m in [regex.search(l)] if m] #Look into this
-UTM10 = arcpy.SpatialReference(26910)
 
-#Bing logo masks
-logomask_odd = path.join(rootdir, 'results/boolean_logo.tif')
-logomask_even = path.join(rootdir, 'results/boolean_logoalt.tif')
+#UTM10 = arcpy.SpatialReference(26910)
 
 #Note that 180623_02_45 was deleted because too incomplete and 180625_22_45 is missing tiles (scheduled task crashed)
-gdb = path.join(rootdir,'results/bing/postprocess.gdb')
+gdb = path.join(rootdir,'results/airdata/postprocess.gdb')
 if arcpy.Exists(gdb):
     print('Geodatabase already exists')
 else:
@@ -39,53 +37,10 @@ bingclean_even = path.join(res, 'bingcleanev')
 bingclean_mean = path.join(gdb, 'bingcleanmea')
 bingeuc = path.join(res, 'bingeuc')
 
-#Reclassify (2 min/hourly image when out of a gdb, then 8 minutes when using gdb?)
-arcpy.env.workspace= gdb
-if not arcpy.ListRasters('reclas_*'):
-    remap = RemapValue([[1, 0], [2, 0], [3, 0], [4, 0], [5, 2], [6, 3], [7, 0], [8, 1],['NODATA',0]])
-    for f in clasfiles:
-        t0 = time.time()
-        print(f)
-        outf = path.join(gdb, 'reclas_{}'.format(f[:-14]))
-        if arcpy.Exists(outf):
-            print('{} already exists'.format(outf))
-        else:
-            outReclass = Reclassify(path.join(res, f), 'Value', remap, "DATA")
-            outReclass.save(outf)
-        print(time.time() - t0)
 
 #Create list of layers for odd and even hours to remove bing logo
-reclasfiles = arcpy.ListRasters('reclas_*')
-oddclasfiles = [path.join(gdb, f) for f in reclasfiles if (int(f[14:16]) % 2 > 0)]
-evenclasfiles = [path.join(gdb, f) for f in reclasfiles if (int(f[14:16]) % 2 == 0)]
+mlclist = arcpy.ListRasters('*tif')
 
-#Compute mean across time for even and odd hours separately - 5h for a week of data
-t0 = time.time()
-arcpy.env.extent = "MAXOF"
-if not arcpy.Exists(bingmean_odd):
-    bingmean = CellStatistics(oddclasfiles, statistics_type='MEAN', ignore_nodata='DATA')
-    bingmean.save(bingmean_odd) #Saving to .tif within /bing does not work, saving to grid within F: works
-    print('Done averaging traffic for odd hours')
-if not arcpy.Exists(bingmean_even):
-    bingmean = CellStatistics(evenclasfiles, statistics_type='MEAN', ignore_nodata='DATA')
-    bingmean.save(bingmean_even)
-    print('Done averaging traffic for even hours')
-t1=time.time()
-print(t1-t0)
-
-#Compute mean for all days at 3 am to identify semi-permanent road closures
-if not arcpy.Exists(traffic3am_ras):
-    arcpy.env.extent = "MAXOF"
-    print('Produce 3 am traffic layer')
-    traffic3am_raslist = arcpy.ListRasters('reclas_*_03_00')
-    traffic3am_mean  = CellStatistics(traffic3am_raslist, statistics_type='MEAN', ignore_nodata='DATA')
-    traffic3am_mean.save(traffic3am_ras)
-if not arcpy.Exists(traffic2am_ras):
-    arcpy.env.extent = "MAXOF"
-    print('Produce 2 am traffic layer')
-    traffic2am_raslist = arcpy.ListRasters('reclas_*_02_00')
-    traffic2am_mean  = CellStatistics(traffic2am_raslist, statistics_type='MEAN', ignore_nodata='DATA')
-    traffic2am_mean.save(traffic2am_ras)
 
 #Clean out bing logo and road closure artefacts then run euclidean allocation on tiles
 arcpy.ResetEnvironments()
