@@ -2,6 +2,7 @@ import multiprocessing
 from functools import partial
 import arcpy
 from arcpy.sa import *
+import traceback
 import os
 import re
 import itertools
@@ -12,6 +13,7 @@ arcpy.CheckOutExtension("Spatial")
 arcpy.env.overwriteOutput=True
 rootdir = 'F:/Levin_Lab/stormwater'
 res = os.path.join(rootdir, 'results/airdata/tiles')
+
 'Useful resources:' \
 '- https://pythongisandstuff.wordpress.com/2013/07/31/using-arcpy-with-multiprocessing-part-3/' \
 '- https://gis.stackexchange.com/questions/140533/can-multiprocessing-with-arcpy-be-run-in-a-script-tool' \
@@ -27,9 +29,9 @@ def bingmean(tile, tilediceven, Neven, tiledicodd, Nodd, tiledic2am, N2am, tiled
 
     if not arcpy.Exists(outras):
         tmpdir = os.path.join(os.path.dirname(outdir),'tmp_{}'.format(str(tile)))
-        os.mkdir(tmpdir)
-        arcpy.env.scratchWorkspace = tmpdir
         try:
+            os.mkdir(tmpdir)
+            arcpy.env.scratchWorkspace = tmpdir
 
             arcpy.env.extent = "MAXOF"
             #Compute mean bing index
@@ -117,7 +119,8 @@ def bingmean(tile, tilediceven, Neven, tiledicodd, Nodd, tiledic2am, N2am, tiled
                       out_gdb=outdir, out_var= outras, divnum=100, keyw=keyw, ext='.tif',
                       verbose = False)
             print('Done generating heatmap')
-        except:
+        except Exception:
+            traceback.print_exc()
             arcpy.Delete_management(tmpdir)
         if arcpy.Exists(tmpdir):
             arcpy.Delete_management(tmpdir)
@@ -142,9 +145,9 @@ if __name__ == '__main__':
     ntileodd = 0
     for i in mlclist:
         if (int(i[7:9]) % 2) > 0:
-            tileodd[os.path.split(i)[1][13:22]].append(i)
+            tileodd[os.path.split(i)[1][13:22]].append(os.path.join(res, i))
         elif (int(i[7:9]) % 2) == 0:
-            tileeven[os.path.split(i)[1][13:22]].append(i)
+            tileeven[os.path.split(i)[1][13:22]].append(os.path.join(res, i))
         datetimes.append(os.path.split(i)[1][0:12])
     daterange = list(sorted(set(datetimes)))
     ntileeven = len([h for h in daterange if (int(h[7:9]) % 2) == 0])
