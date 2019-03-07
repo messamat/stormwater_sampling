@@ -13,6 +13,7 @@ import pandas as pd
 import numpy as np
 import time
 import logging
+import itertools
 
 #Custom modules
 from explode_overlapping import *
@@ -31,7 +32,7 @@ arcpy.env.overwriteOutput=True
 arcpy.env.qualifiedFieldNames = False
 
 #Set up paths
-rootdir = 'C:/Mathis/ICSL/stormwater'
+rootdir = 'F:/Levin_Lab/stormwater'
 
 roads = os.path.join(rootdir, 'data/CitySeattle_20180601/Seattle_Streets/Seattle_Streets.shp')
 kingroads = os.path.join(rootdir, 'data/King_201806/Metro_Transportation_Network_TNET_in_King_County_for_Car_Mode__trans_network_car_line/'
@@ -450,3 +451,56 @@ arcpy.SpatialJoin_analysis('trees_proj', 'zoning_proj', 'trees_zoning', join_ope
 #Get census data
 arcpy.Project_management(censustract, 'Tract_2010Census_proj', UTM10)
 arcpy.SpatialJoin_analysis('trees_zoning', 'Tract_2010Census_proj', 'trees_zoning_census', join_operation='JOIN_ONE_TO_ONE', match_option='WITHIN')
+
+########################################################################################################################
+# GET AQI STATIONS HEATMAP VALUES
+# Select candidate species of trees from the City of Seattle's street-tree dataset and extract heatmap values at their
+# location
+########################################################################################################################
+AQIdir = res = os.path.join(rootdir, 'results/airdata')
+stations = os.path.join(AQIdir, 'airsites.shp')
+# Create list of layers
+regexheatbing = re.compile("heatbing.*[.]tif$")
+heatbinglist = list(itertools.chain.from_iterable( #To unnest list
+    [filter(regexheatbing.search, [os.path.join(dirpath, file) for file in filenames])
+     for (dirpath, dirnames, filenames) in os.walk(AQIdir)]))
+regexheatSPD = re.compile("heatfclassSPD.*[.]tif$")
+heatSPDlist = list(itertools.chain.from_iterable( #To unnest list
+    [filter(regexheatSPD.search, [os.path.join(dirpath, file) for file in filenames])
+     for (dirpath, dirnames, filenames) in os.walk(AQIdir)]))
+
+#Two options: either run through each tile, set extent, then extract single value to points, OR extract multivalues to points on all points then melt table
+#Get extent from raster
+heatbingdic = {}
+for tile in heatbinglist:
+    print(tile)
+    #tic = time.time()
+    arcpy.env.extent = tile
+    for row in arcpy.da.SearchCursor(arcpy.sa.Sample(tile, stations, r'in_memory/bingpt'),
+                                     ['airsites', os.path.splitext(os.path.basename(tile))[0]]):
+        if row[1] is not None:
+            heatbingdic[row[0]] = row[1]
+    #print(time.time() - tic)
+
+heatSPDdic = {}
+for tile in heatSPDlist:
+    print(tile)
+    #tic = time.time()
+    arcpy.env.extent = tile
+    for row in arcpy.da.SearchCursor(arcpy.sa.Sample(tile, stations, r'in_memory/SPDpt'),
+                                     ['airsites', os.path.splitext(os.path.basename(tile))[0]]):
+        if row[1] is not None:
+            heatSPDdic[row[0]] = row[1]
+    #print(time.time() - tic)
+
+arcpy.AddField_management(stations, field_name='hbglog300', field_type = 'FLOAT')
+arcpy.AddField_management(stations, field_name='hSPDlog300', field_type = 'FLOAT')
+with arcpy.da.UpdateCursor(stations, ['FID', 'hbglog300', 'hSPDlog300']) as cursor:
+    for row in cursor:
+        # print(row[0])
+        # if int(row[0]) in heatbingdic:
+        #     #print(row[0])
+        #     row[1] = heatbingdic[int(row[0])]
+        if int(row[0]) in heatSPDdic:
+            row[2] = heatSPDdic[int(row[0])]
+        cursor.updateRow(row)

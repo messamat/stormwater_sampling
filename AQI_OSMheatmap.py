@@ -11,7 +11,7 @@ arcpy.env.overwriteOutput=True
 
 def OSMtoheat(site, inshp, res, kernel_dir, keyw, inFID, heatfield, sitedic, outdir):
     expr =  """{0} = {1}""".format(arcpy.AddFieldDelimiters(inshp, inFID), str(site))
-    #print(expr)
+    print(expr)
     arcpy.MakeFeatureLayer_management(in_features=inshp, out_layer='lyr')
     arcpy.SelectLayerByAttribute_management('lyr', selection_type='NEW_SELECTION', where_clause=expr)
     #print(site)
