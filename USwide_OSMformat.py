@@ -8,8 +8,7 @@ import shapely
 from BeautifulSoup import BeautifulSoup
 import urllib2
 import zipfile
-from xlrd import open_workbook
-from xlutils.copy import copy
+import numpy as np
 
 pd.options.display.max_columns = 20
 
@@ -18,7 +17,11 @@ USDOTdir = os.path.join(rootdir, "data\USDOT_0319")
 resdir = os.path.join(rootdir, 'results/usdot')
 
 #Output variables
-ushpms = os.path.join(resdir, 'ushpms')
+usdotgdb = os.path.join(resdir, 'usdot.gdb')
+ushpms = os.path.join(usdotgdb, 'ushpms')
+
+if not arcpy.Exists(usdotgdb):
+    arcpy.CreateFileGDB_management(resdir, out_name = 'usdot')
 
 ########################################################################################################################
 # FORMAT TMAS DATA
@@ -241,7 +244,6 @@ def dlfile(url, outpath):
             zipf.extractall(os.path.split(outpath)[0])
         del zipf
 
-
 #Get HPMS data for every state
 hpmsurl = "https://www.fhwa.dot.gov/policyinformation/hpms/shapefiles.cfm"
 hpms_page = urllib2.urlopen(hpmsurl)
@@ -262,7 +264,6 @@ for link in hpms_soup.findAll('a', attrs={'href': hpms_regex}):
         print('{} already exists...'.format(outpath))
 
 #Merge all HPMS data
-ushpms = os.path.join(resdir, 'ushpms')
 print('{} missing shapefiles...'.format(len([file for file in hpmsshp if not os.path.exists(file)])))
 arcpy.Merge_management([file for file in hpmsshp if os.path.exists(file)], ushpms)
 
@@ -292,32 +293,36 @@ vm2urltab = os.path.split(vm2url)[0] + '/' + \
 vm2tab = os.path.join(USDOTdir, os.path.split(vm2urltab)[1])
 dlfile(vm2urltab, vm2tab)
 
-#Format tables
+#Format hm20 table
 hm20pd = pd.ExcelFile(hm20tab)
 hm20sheet = hm20pd.parse(hm20pd.sheet_names[1])
 #Format header row
 hm20sheet_tab = hm20sheet.loc[8:,:] #Remove title
 hm20sheet_tab.loc[8,:][1:9] = hm20sheet_tab.loc[8,:][1] #Extend rural across columns
 hm20sheet_tab.loc[8,:][9:17] = hm20sheet_tab.loc[8,:][9] #Extend urban across colums
-hm20sheet_format = hm20sheet.loc[12:,:].reset_index(drop=True)
+hm20sheet_format = hm20sheet_tab.loc[12:,:].reset_index(drop=True)
 hm20sheet_format.columns = hm20sheet_tab.loc[8:11,:].apply(lambda col: col.str.cat(), axis=0)
 #Drop totals
 hm20sheet_format = hm20sheet_format.drop(axis=1, labels = [col for col in hm20sheet_format.columns if re.compile('.*TOTAL$').match(col)])
 hm20sheet_format = hm20sheet_format.loc[hm20sheet_format.STATE.str.contains('.*(?<!\sTotal)$'),:]
 
+#Format vm2 table
+vm2pd = pd.ExcelFile(vm2tab)
+vm2sheet = vm2pd.parse(vm2pd.sheet_names[1])
+#Format header row
+vm2sheet_tab = vm2sheet.loc[8:65,:] #Remove title
+vm2sheet_tab.loc[8,:][1:9] = vm2sheet_tab.loc[8,:][1] #Extend rural across columns
+vm2sheet_tab.loc[8,:][9:17] = vm2sheet_tab.loc[8,:][9] #Extend urban across colums
+vm2sheet_format = vm2sheet_tab.loc[12:,:].reset_index(drop=True)
+vm2sheet_format.columns = vm2sheet_tab.loc[8:11,:].apply(lambda col: col.str.cat(), axis=0)
+#Drop totals
+vm2sheet_format = vm2sheet_format.drop(axis=1, labels = [col for col in vm2sheet_format.columns if re.compile('.*TOTAL$').match(col)])
+vm2sheet_format = vm2sheet_format.loc[vm2sheet_format.STATE.str.contains('.*(?<!\sTotal)$'),:]
 
-
-
-
-
-
-
-
-#Delete rows 1-11 and 66-
-#Delete columns I, Q, R-
-#Merge rows 12-14 for each column
-#
-
-
-
-
+#Compute AADT for each road type as Yearly Vehicle Miles Traveled/(Total length of roads*365)
+np.where((vm2sheet_format == 0) != (hm20sheet_format == 0)) #No mismatch in cells with 0 values (0 miles traveled is always matched by 0 miles of road)
+USAADT = vm2sheet_format.copy()
+USAADT[USAADT != 0] = \
+    ((10**6)*vm2sheet_format[vm2sheet_format!=0].iloc[:,1:])\
+    .div(hm20sheet_format[hm20sheet_format!=0].iloc[:,1:])\
+    .div(365)
