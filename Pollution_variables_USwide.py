@@ -24,16 +24,10 @@ UA = os.path.join(USDOTdir, '2010CensusUrbanizedArea/UrbanizedArea2010.shp')
 #Output variables
 usdotgdb = os.path.join(resdir, 'usdot.gdb')
 ushpms = os.path.join(usdotgdb, 'ushpms')
-USOSM = os.path.join(AQIgdb, 'USOSM')
-USOSM_UA = os.path.join(AQIgdb, 'USOSM_UA')
-OSMAQI =  os.path.join(AQIgdb, 'AQI_OSMinters')
-OSMAQIproj = os.path.join(AQIgdb, 'OSMAQIproj')
-OSMhpms = os.path.join(usdotgdb, 'OSMhpms_join')
-
 
 if not arcpy.Exists(usdotgdb):
     arcpy.CreateFileGDB_management(resdir, out_name = 'usdot')
-    
+
 ########################################################################################################################
 # FORMAT HIGHWAY AADT SPATIAL DATA
 ########################################################################################################################
@@ -127,68 +121,5 @@ USAADT[USAADT != 0] = \
     ((10**6)*vm2sheet_format[vm2sheet_format!=0].iloc[:,1:])\
     .div(hm20sheet_format[hm20sheet_format!=0].iloc[:,1:])\
     .div(365)
-
-########################################################################################################################
-# MERGE OSM WITH HPMS
-########################################################################################################################
-#-----------------------------------------------------------------------------------------------------------------------
-# FORMAT OSM DATA FOR ANALYSIS
-#-----------------------------------------------------------------------------------------------------------------------
-#Merge OSM data for US
-USOSMlist = []
-for (dirname, dirs, files) in os.walk(USOSMdir):
-   for filename in files:
-       if filename == 'gis_osm_roads_free_1.shp':
-           print(os.path.split(dirname)[1])
-           USOSMlist.append(os.path.join(dirname,filename))
-arcpy.Merge_management(USOSMlist, USOSM)
-
-#Only select road types with car traffic
-#Select OSM roads, but this map with service roads, as enough through traffic to potentially have some impact
-arcpy.MakeFeatureLayer_management(USOSM, 'OSMroads_lyr')
-np.unique([row[0] for row in arcpy.da.SearchCursor('OSMroads_lyr', ['fclass'])])
-sel = "{} IN ('motorway','motorway_link','living_street','primary','primary_link','residential','secondary','secondary_link'," \
-      "'tertiary','tertiary_link','trunk','trunk_link','unclassified','unknown', 'service')".format('"fclass"')
-arcpy.SelectLayerByAttribute_management('OSMroads_lyr', 'NEW_SELECTION', sel)
-arcpy.CopyFeatures_management('OSMroads_lyr', USOSM + 'sub')
-arcpy.Delete_management('OSMroads_lyr')
-
-#Overlay OSM with urbanized areas
-arcpy.SpatialJoin_analysis(USOSM+'sub', UA, USOSM_UA, join_operation="JOIN_ONE_TO_ONE", join_type='KEEP_ALL',
-                           match_option='INTERSECT')
-
-#Merge with OSM by spatial overlap
-SpatialJoinLines_LargestOverlap(target_features= USOSM, join_features= ushpms,
-                                out_fc= os.path.split(OSMhpms)[1], outgdb=os.path.split(OSMhpms)[0],
-                                bufsize='10 meters', keep_all=True,
-                                fields_select=[f.name for f in arcpy.ListFields(ushpms)])
-
-
-# sites_outbufunion = os.path.join(outdir, 'airsites_600bufunion.shp')
-#Project OSM data
-# arcpy.Project_management(OSMAQI, OSMAQIproj, out_coor_system= sites_outbufunion
-# #Intersect roads with buffers
-# arcpy.Intersect_analysis([sites_outbufunion, USOSM], OSMAQI, join_attributes='ALL')
-#
-# #Get SPD and AADT medians for each fclass
-# fclass_SPDADTmedian = pd.read_csv(os.path.join(rootdir, 'results/OSM_SPDADTmedian.csv'))
-#
-# #OSM AADT AND SPD (apply Puget Sound data for now  get US-wide data in the future)
-# #Convert OSM functional categories to numbers
-# arcpy.AddField_management(OSMAQI, 'fclassADT', 'LONG')
-# arcpy.AddField_management(OSMAQI, 'fclassSPD', 'LONG')
-# with arcpy.da.UpdateCursor(OSMAQI, ['fclass','fclassADT', 'fclassSPD']) as cursor:
-#     for row in cursor:
-#         if any(fclass_SPDADTmedian['first'].isin([row[0]])):
-#             if row[0] in ['service','unclassified','unknown', 'living_street']: #Value for service and unclassified seem overestimated
-#                 row[1] = int(fclass_SPDADTmedian[fclass_SPDADTmedian['first'] == 'residential'].mean_ADT)
-#             else:
-#                 row[1] = int(fclass_SPDADTmedian.loc[fclass_SPDADTmedian['first'] == row[0]].mean_ADT)
-#
-#              row[2] = int(fclass_SPDADTmedian.loc[fclass_SPDADTmedian['first'] == row[0]].mean_SPD)
-#         else:
-#             row[1]=0
-#             row[2]=0
-#         cursor.updateRow(row)
 
 #Donwload National Transit Map data
