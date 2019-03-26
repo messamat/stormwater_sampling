@@ -26,6 +26,7 @@ Acknowledgement to http://www.stevencanplan.com/2010/10/how-to-convert-gtfs-to-s
 import arcpy
 import os
 import re
+import csv
 import zipfile
 import logging
 from collections import defaultdict
@@ -36,14 +37,13 @@ arcpy.env.qualifiedFieldNames = False
 
 #--------------------------------------------------------------
 # FOR TROUBLESHOOTING
-# rootdir = 'C:/Mathis/ICSL/stormwater/'
-# gtfs_dir = os.path.join(rootdir, 'data\\TransitWiki201812\\mason-wa-us.zip') #clallam_google_transit.zip # island-transit-wa-us.zip
-# out_gdb = os.path.join(rootdir, 'results/transit.gdb')
-# out_fc = 'mason_wa_us' #island_transit_wa_us
-# current = True
-# keep = False
-# outdir = os.path.split(gtfs_dir)[0]
-# infile = os.path.join(outdir,'calendar.txt')
+# rootdir = 'D:/Mathis/ICSL/stormwater/'
+# gtfs_dir= os.path.join(rootdir, 'data/NTM_0319')
+# out_gdb=os.path.join(rootdir, 'results/NTM.gdb')
+# out_fc = 'NTM'
+# keep = True
+# outdir = gtfs_dir
+# infile = os.path.join(gtfs_dir,'NTM_calendar.csv')
 #--------------------------------------------------------------
 
 def format_schema_import(infile, outdir):
@@ -51,52 +51,53 @@ def format_schema_import(infile, outdir):
 
     #Read infile headers
     with open(infile, 'r') as txt:
-        txtF = txt.readlines()
-        txtH = txtF[0].replace('\n', '').split(',')
+        dialect = csv.Sniffer().sniff(txt.read())
+        txt.seek(0)
+        txtF = csv.DictReader(txt, delimiter=dialect.delimiter)
+        txtH = txtF.fieldnames
 
-    # Write schema.ini file
-    idfields = ['route_id', 'service_id', 'trip_id', 'shape_id']
-    for i in range(0, len(txtH)):
-        fname = txtH[i]
-        #If ID field in text file
-        if fname in idfields:
-            #print(fname)
-            maxflen = max([len(l.replace('\n', '').split(',')[i]) for l in txtF]) #maximum length of id field
-            schema_header = '[{0}]\nFormat=CSVDelimited\nColNameHeader=True'.format(filebase)
-            schema_addline = '\nCol{0}={1} Text Width {2}'.format(i + 1, fname, maxflen)
+        # Write schema.ini file
+        idfields = ['route_id', 'service_id', 'trip_id', 'shape_id', 'block_id']
+        for i in range(0, len(txtH)):
+            fname = txtH[i]
+            #If ID field in text file
+            if fname in idfields:
+                print(fname)
+                maxflen = max([len(row[row.keys()[i]]) for row in txtF]) #maximum length of id field
+                schema_header = '[{0}]\nFormat=CSVDelimited\nColNameHeader=True'.format(filebase)
+                schema_addline = '\nCol{0}={1} Text Width {2}'.format(i + 1, fname, maxflen)
 
-            #If a schema file already exists
-            if 'schema.ini' in os.listdir(outdir):
-                with open(os.path.join(outdir, 'schema.ini'), 'r') as schematxt:
-                    schemaF = schematxt.readlines()
-                    allines = ('').join(schemaF)
+                #If a schema file already exists
+                if 'schema.ini' in os.listdir(outdir):
+                    with open(os.path.join(outdir, 'schema.ini'), 'r') as schematxt:
+                        schemaF = schematxt.readlines()
+                        allines = ('').join(schemaF)
 
-                postfile_regex = '[[]{}[]](?s).*(?=[[]|$)'.format(filebase)
-                col_regex = 'Col{0}.*(?=\n|$)'.format(i + 1)
+                    postfile_regex = '[[]{}[]](?s).*(?=[[]|$)'.format(filebase)
+                    col_regex = 'Col{0}.*(?=\n|$)'.format(i + 1)
 
-                # If txt file already in schema ini
-                if re.compile(postfile_regex).search(allines):
-                    ftxt = re.compile(postfile_regex).search(allines).group()
+                    # If txt file already in schema ini
+                    if re.compile(postfile_regex).search(allines):
+                        ftxt = re.compile(postfile_regex).search(allines).group()
 
-                    with open(os.path.join(outdir, 'schema.ini'), 'w') as schematxt:
-                        # If column in schema ini
-                        if re.compile(col_regex).search(ftxt):
-                            part_rep = re.sub(col_regex, 'Col{0}={1} Text Width {2}'.format(i + 1, fname, maxflen), ftxt)
-                            full_rep = re.sub(postfile_regex, part_rep, allines)
+                        with open(os.path.join(outdir, 'schema.ini'), 'w') as schematxt:
+                            # If column in schema ini
+                            if re.compile(col_regex).search(ftxt):
+                                part_rep = re.sub(col_regex, 'Col{0}={1} Text Width {2}'.format(i + 1, fname, maxflen), ftxt)
+                                full_rep = re.sub(postfile_regex, part_rep, allines)
 
-                        else: #If column not in schema ini
-                            full_rep = re.sub(postfile_regex, '{0}{1}'.format(ftxt, schema_addline), allines)
+                            else: #If column not in schema ini
+                                full_rep = re.sub(postfile_regex, '{0}{1}'.format(ftxt, schema_addline), allines)
+                            schematxt.write(full_rep)
 
-                        schematxt.write(full_rep)
+                    else: #If txt file not already in schema ini
+                        with open(os.path.join(outdir, 'schema.ini'), 'a') as schematxt:
+                            schematxt.write('\n{0}{1}'.format(schema_header, schema_addline))
 
-                else: #If txt file not already in schema ini
-                    with open(os.path.join(outdir, 'schema.ini'), 'a') as schematxt:
-                        schematxt.write('\n{0}{1}'.format(schema_header, schema_addline))
-
-            #If a schema file doesn't already exist
-            else:
-                with open(os.path.join(outdir, "schema.ini"), "w") as schematxt:
-                    schematxt.write('{0}{1}'.format(schema_header, schema_addline))
+                #If a schema file doesn't already exist
+                else:
+                    with open(os.path.join(outdir, "schema.ini"), "w") as schematxt:
+                        schematxt.write('{0}{1}'.format(schema_header, schema_addline))
 
 def delete_intoutput(dir, ziplist, intlist) :
     print('Deleting intermediate outputs...')
@@ -118,7 +119,6 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
     else:
         print('{} already exists, using existing gdb...'.format(out_gdb))
     arcpy.env.workspace = out_gdb
-    gtfs_rootdir = os.path.split(gtfs_dir)[0]
 
     if os.path.exists(gtfs_dir) and \
             (os.path.isdir(gtfs_dir) or zipfile.is_zipfile(gtfs_dir)): #Make sure that path exists and is a dir
@@ -132,18 +132,28 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
                         [f for f in zipfilelist if os.path.exists(os.path.join(gtfs_rootdir, f))])))
                     zipf.extractall(os.path.split(gtfs_dir)[0])
                 del zipf
+                gtfs_rootdir = os.path.split(gtfs_dir)[0]
+            else:
+                gtfs_rootdir = gtfs_dir
 
             #Import GTFS text files to out_gdb
             print('Importing GTFS tables into gdb...')
-            format_schema_import(infile=os.path.join(gtfs_rootdir,'routes.txt'), outdir=gtfs_rootdir)
-            arcpy.TableToTable_conversion(os.path.join(gtfs_rootdir,'routes.txt'), out_gdb, 'routes')
-            print('routes.txt imported')
-            format_schema_import(infile=os.path.join(gtfs_rootdir,'trips.txt'), outdir=gtfs_rootdir)
-            arcpy.TableToTable_conversion(os.path.join(gtfs_rootdir, 'trips.txt'), out_gdb, 'trips')
-            print('trips.txt imported')
-            format_schema_import(infile=os.path.join(gtfs_rootdir,'calendar.txt'), outdir=gtfs_rootdir)
-            arcpy.TableToTable_conversion(os.path.join(gtfs_rootdir, 'calendar.txt'), out_gdb, 'calendar')
-            print('calendar.txt imported')
+            gtfs_files = [os.path.join(dirpath, file)
+                          for (dirpath, dirnames, filenames) in os.walk(gtfs_rootdir)
+                          for file in filenames]
+
+            routesf = filter(re.compile('.*routes[.](csv|txt)').search, gtfs_files)[0]
+            format_schema_import(infile=routesf, outdir=gtfs_rootdir)
+            arcpy.TableToTable_conversion(routesf, out_gdb, 'routes')
+            print('routes imported')
+            tripsf = filter(re.compile('.*trips[.](csv|txt)').search, gtfs_files)[0]
+            format_schema_import(infile=tripsf, outdir=gtfs_rootdir)
+            arcpy.TableToTable_conversion(tripsf, out_gdb, 'trips')
+            print('trips imported')
+            calendarf = filter(re.compile('.*calendar[.](csv|txt)').search, gtfs_files)[0]
+            format_schema_import(infile=calendarf, outdir=gtfs_rootdir)
+            arcpy.TableToTable_conversion(calendarf, out_gdb, 'calendar')
+            print('calendar imported')
             # arcpy.CopyRows_management(os.path.join(gtfs_rootdir, 'calendar_dates.txt'), 'calendar') #Imports in wrong format
             # print('calendar_dates.txt imported')
             #arcpy.CopyRows_management(os.path.join(gtfs_rootdir,'stop_times.txt'), 'stop_times')
@@ -156,7 +166,8 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
             newfc = arcpy.CreateFeatureclass_management(out_gdb, out_fc, "Point")
             arcpy.DefineProjection_management(newfc , 4326)
 
-            with open(os.path.join(gtfs_rootdir, 'shapes.txt'), 'r') as shp_txt:
+            shapesf = filter(re.compile('.*shapes[.](csv|txt)').search, gtfs_files)[0]
+            with open(shapesf, 'r') as shp_txt:
                 shp_F = shp_txt.readlines()
 
             #Create columns based on those in shape.txt
@@ -197,13 +208,14 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
 
             #Analyze calendar dates for trips with no calendar schedule
             '''
-            In some cases, calendar.txt was entirely omitted for a trip, and ALL dates of service were included in 
-            calendar_dates.txt (https://developers.google.com/transit/gtfs/reference/#calendar_datestxt).
+            In some cases, calendar was entirely omitted for a trip, and ALL dates of service were included in 
+            calendar_dates (https://developers.google.com/transit/gtfs/reference/#calendar_datestxt).
             This happens when schedule varies most days of the month, or the agency wants to programmatically output service 
-            dates without specifying a normal weekly schedule. In most cases however, calendar_dates.txt is used to define 
-            exceptions to the default service categories defined in calendar.txt file. 
+            dates without specifying a normal weekly schedule. In most cases however, calendar_dates is used to define 
+            exceptions to the default service categories defined in calendar file. 
             '''
-            with open(os.path.join(gtfs_rootdir, 'calendar_dates.txt'), 'r') as cal_txt:
+            calendat_datesf = filter(re.compile('.*calendar_dates[.](csv|txt)').search, gtfs_files)[0]
+            with open(calendat_datesf, 'r') as cal_txt:
                 cal_F = cal_txt.readlines()
                 cal_headers = cal_F[0].replace('\n', '').split(',')
 
