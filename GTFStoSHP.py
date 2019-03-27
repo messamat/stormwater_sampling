@@ -29,6 +29,7 @@ import re
 import csv
 import zipfile
 import logging
+import dateutil.parser
 from collections import defaultdict
 from datetime import datetime
 
@@ -43,7 +44,9 @@ arcpy.env.qualifiedFieldNames = False
 # out_fc = 'NTM'
 # keep = True
 # outdir = gtfs_dir
-# infile = os.path.join(gtfs_dir,'NTM_calendar.csv')
+# infile = os.path.join(gtfs_dir,'NTM_trips.csv')
+# arcpy.env.workspace = out_gdb
+# #shapesf = 'D:\Mathis\ICSL\stormwater\data\TransitWiki201812\shapes.txt'
 #--------------------------------------------------------------
 
 def format_schema_import(infile, outdir):
@@ -63,7 +66,7 @@ def format_schema_import(infile, outdir):
             #If ID field in text file
             if fname in idfields:
                 print(fname)
-                maxflen = max([len(row[row.keys()[i]]) for row in txtF]) #maximum length of id field
+                maxflen = max([len(row[fname]) for row in txtF]) #maximum length of id field
                 schema_header = '[{0}]\nFormat=CSVDelimited\nColNameHeader=True'.format(filebase)
                 schema_addline = '\nCol{0}={1} Text Width {2}'.format(i + 1, fname, maxflen)
 
@@ -98,6 +101,9 @@ def format_schema_import(infile, outdir):
                 else:
                     with open(os.path.join(outdir, "schema.ini"), "w") as schematxt:
                         schematxt.write('{0}{1}'.format(schema_header, schema_addline))
+
+                #Rewind table reader
+                txt.seek(0)
 
 def delete_intoutput(dir, ziplist, intlist) :
     print('Deleting intermediate outputs...')
@@ -142,15 +148,15 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
                           for (dirpath, dirnames, filenames) in os.walk(gtfs_rootdir)
                           for file in filenames]
 
-            routesf = filter(re.compile('.*routes[.](csv|txt)').search, gtfs_files)[0]
+            routesf = filter(re.compile('.*routes[.](csv|txt)$').search, gtfs_files)[0]
             format_schema_import(infile=routesf, outdir=gtfs_rootdir)
             arcpy.TableToTable_conversion(routesf, out_gdb, 'routes')
             print('routes imported')
-            tripsf = filter(re.compile('.*trips[.](csv|txt)').search, gtfs_files)[0]
+            tripsf = filter(re.compile('.*trips[.](csv|txt)$').search, gtfs_files)[0]
             format_schema_import(infile=tripsf, outdir=gtfs_rootdir)
             arcpy.TableToTable_conversion(tripsf, out_gdb, 'trips')
             print('trips imported')
-            calendarf = filter(re.compile('.*calendar[.](csv|txt)').search, gtfs_files)[0]
+            calendarf = filter(re.compile('.*calendar[.](csv|txt)$').search, gtfs_files)[0]
             format_schema_import(infile=calendarf, outdir=gtfs_rootdir)
             arcpy.TableToTable_conversion(calendarf, out_gdb, 'calendar')
             print('calendar imported')
@@ -159,47 +165,53 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
             #arcpy.CopyRows_management(os.path.join(gtfs_rootdir,'stop_times.txt'), 'stop_times')
 
             #-------------------------------------------------------------------------------------------------------------------
-            # CREATE SHAPEFILE FROM SHAPES.TXT
+            # CREATE SHAPEFILE FROM SHAPES.TXT IF NEEDED
             #-------------------------------------------------------------------------------------------------------------------
             print('Creating point feature class...')
 
-            newfc = arcpy.CreateFeatureclass_management(out_gdb, out_fc, "Point")
-            arcpy.DefineProjection_management(newfc , 4326)
+            shapesf = filter(re.compile('.*shapes[.](csv|txt|shp)$').search, gtfs_files)[0]
 
-            shapesf = filter(re.compile('.*shapes[.](csv|txt)').search, gtfs_files)[0]
-            with open(shapesf, 'r') as shp_txt:
-                shp_F = shp_txt.readlines()
+            if os.path.splitext(shapesf)[1] in ['.csv', '.txt']:
+                newfc = arcpy.CreateFeatureclass_management(out_gdb, out_fc, "Point")
+                arcpy.DefineProjection_management(newfc, 4326)
 
-            #Create columns based on those in shape.txt
-            headers = shp_F[0].replace('\n', '').split(',')
-            arcpy.AddField_management(newfc, 'shape_id', 'TEXT', field_length = 50)
-            arcpy.AddField_management(newfc, 'shape_pt_lat', 'FLOAT')
-            arcpy.AddField_management(newfc, 'shape_pt_lon', 'FLOAT')
-            arcpy.AddField_management(newfc, 'shape_pt_sequence', 'LONG')
-            if 'shape_dist_traveled' in headers:
-                arcpy.AddField_management(newfc, 'shape_dist_traveled', 'FLOAT')
+                with open(shapesf, 'r') as shp_txt:
+                    dialect = csv.Sniffer().sniff(shp_txt.read())
+                    shp_txt.seek(0)
+                    txtF = csv.DictReader(shp_txt, delimiter=dialect.delimiter)
+                    headers = txtF.fieldnames
 
-            #Get column number of coordinates
-            iy = headers.index('shape_pt_lat')
-            ix = headers.index('shape_pt_lon')
+                    #Create columns based on those in shape.txt
+                    arcpy.AddField_management(newfc, 'shape_id', 'TEXT', field_length = 50)
+                    arcpy.AddField_management(newfc, 'shape_pt_lat', 'FLOAT')
+                    arcpy.AddField_management(newfc, 'shape_pt_lon', 'FLOAT')
+                    arcpy.AddField_management(newfc, 'shape_pt_sequence', 'LONG')
+                    if 'shape_dist_traveled' in headers:
+                        arcpy.AddField_management(newfc, 'shape_dist_traveled', 'FLOAT')
 
-            #Fill in point feature class
-            with arcpy.da.InsertCursor(newfc, headers + ["SHAPE@XY"]) as cursor:
-                for line in shp_F[1:]:
-                    try:
-                        lineformat = line.replace('\n', '').split(',')
-                        lineformat.append((float(lineformat[ix]), float(lineformat[iy]))) #Add coordinate tuple
-                        cursor.insertRow(tuple(lineformat))
-                    except Exception as e:
-                        print(e)
-                        logging.warning('{0} \n Error row: {1}'.format(e, line))
-            del shp_txt
-            del shp_F
+                    #Fill in point feature class
+                    with arcpy.da.InsertCursor(newfc, headers + ["SHAPE@XY"]) as cursor:
+                        for line in txtF:
+                            try:
+                                lineformat = [line['shape_id'],
+                                              line['shape_pt_lat'],
+                                              line['shape_pt_lon'],
+                                              line['shape_pt_sequence']]
+                                if 'shape_dist_traveled' in headers:
+                                    lineformat.append(line['shape_dist_traveled'])
+                                lineformat.append((float(line['shape_pt_lon']), float(line['shape_pt_lat']))) #Add coordinate tuple
+                                cursor.insertRow(tuple(lineformat))
+                            except Exception as e:
+                                print(e)
+                                logging.warning('{0} \n Error row: {1}'.format(e, line))
 
-            #Convert to polyline
-            print('Converting points to lines...')
-            newfc_lines = out_fc + '_lines'
-            arcpy.PointsToLine_management(newfc, newfc_lines, Line_Field= 'shape_id')
+                #Convert to polyline
+                print('Converting points to lines...')
+                newfc_lines = out_fc + '_lines'
+                arcpy.PointsToLine_management(newfc, newfc_lines, Line_Field= 'shape_id')
+            else: #If already a shapefile simply create a copy
+                newfc_lines = out_fc + '_lines'
+                arcpy.CopyFeatures_management(shapesf, newfc_lines)
 
             #-------------------------------------------------------------------------------------------------------------------
             # COMPUTE NUMBER OF WEEKLY TRIPS PER SHAPE
@@ -216,14 +228,16 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
             '''
             calendat_datesf = filter(re.compile('.*calendar_dates[.](csv|txt)').search, gtfs_files)[0]
             with open(calendat_datesf, 'r') as cal_txt:
-                cal_F = cal_txt.readlines()
-                cal_headers = cal_F[0].replace('\n', '').split(',')
+                dialect = csv.Sniffer().sniff(cal_txt.read())
+                cal_txt.seek(0)
+                cal_F = csv.DictReader(cal_txt, delimiter=dialect.delimiter)
+                #cal_headers = cal_F.fieldnames
 
-            # Create a dictionary to store number of dates for each exception_type: 1 service added, 2 service removed
-            cal_dic = defaultdict(lambda: [0]*2)
-            for line in cal_F[1:]:
-                lineformat = dict(zip(cal_headers, line.replace('\n', '').split(',')))
-                cal_dic[lineformat['service_id']][int(lineformat['exception_type'])-1] += 1
+                # Create a dictionary to store number of dates for each exception_type: 1 service added, 2 service removed
+                cal_dic = defaultdict(lambda: [0] * 2)
+                for line in cal_F:
+                    dkey = '{0}_{1}'.format(line['AgencyName'], line['service_id'])
+                    cal_dic[dkey][int(line['exception_type']) - 1] += 1
 
             '''Each route has multiple trips
                Each trip is a unique bus line-time-week day combination (e.g. 6:47 am MON-FRI Line 71)
@@ -235,36 +249,55 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
             arcpy.AddField_management('calendar', 'date_removed', 'SHORT')
             arcpy.AddField_management('calendar', 'date_weekavg', 'FLOAT')
             arcpy.AddField_management('calendar', 'adjustnum', 'FLOAT')
-            arcpy.AddField_management('calendar', 'service_len', 'SHORT')
+            arcpy.AddField_management('calendar', 'service_len', 'LONG')
 
-            cal_fields = ['service_id',  'start_date','end_date', 'normalnum', #0, 1, 2, 3
+            cal_fields = ['AgencyName', 'service_id',  'start_date','end_date', 'normalnum', #0, 1, 2, 3
                           'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday', #4-10
                           'date_added', 'date_removed', 'date_weekavg', 'adjustnum', 'service_len'] #11, 12, 13, 14, 15
             #fl = [f.name for f in arcpy.ListFields('calendar')]
             #[cf for cf in cal_fields if cf not in fl]
 
+            #Correct bug in table whereby the end_date for a given agency includes a line break \n and the service_id
+            with arcpy.da.UpdateCursor('calendar', ['AgencyName', 'end_date']) as cursor:
+                for row in cursor:
+                    if row[0] == 'Nashua_10087_132_914':
+                        row[1] = row[1].split('\n')[0]
+                        cursor.updateRow(row)
+
             with arcpy.da.UpdateCursor('calendar', cal_fields) as cursor:
                 for row in cursor:
-                    service_len = max((datetime.strptime(str(row[2]), '%Y%m%d') -
-                                       datetime.strptime(str(row[1]), '%Y%m%d')).days,
-                                      1)  # Compute length of service in days. If service runs for only one day, assign 1
-                    row[15] = service_len
+                    dkey = '{0}_{1}'.format(row[0], row[1])
+                    print(dkey)
+                    try:
+                        service_len = max((datetime.strptime(str(row[3]), '%Y%m%d') -
+                                           datetime.strptime(str(row[2]), '%Y%m%d')).days,
+                                          1)  # Compute length of service in days. If service runs for only one day, assign 1
+                    except: #If fails, try automatically parsing the date
+                        service_len = max((dateutil.parser.parse(row[3]) -
+                                           dateutil.parser.parse(row[2])).days,
+                                          1)
+                    row[16] = service_len
 
                     #print(row[1])
-                    if row[0] in cal_dic: #if service_id in calendar_dates dictionary
-                        row[11] = cal_dic[row[0]][0] #date_added = number of added service dates in calendar_dates.txt (type 1)
-                        row[12] = cal_dic[row[0]][1] #date_removed = number of removed service dates in calendar_dates.txt (type 2)
-                        row[13] = (cal_dic[row[0]][0]-cal_dic[row[0]][1])/(float(service_len)/7.0) #Compute average net number of exceptions/week
+                    if dkey in cal_dic: #if service_id in calendar_dates dictionary
+                        row[12] = cal_dic[dkey][0] #date_added = number of added service dates in calendar_dates.txt (type 1)
+                        row[13] = cal_dic[dkey][1] #date_removed = number of removed service dates in calendar_dates.txt (type 2)
+                        row[14] = (cal_dic[dkey][0]-cal_dic[dkey][1])/(float(service_len)/7.0) #Compute average net number of exceptions/week
                     else:
-                        row[11:14] = (0,0,0)
-                    cursor.updateRow(row) #update row halfway to avoid having to retype row[13] equation
+                        row[12:15] = (0,0,0)
+                    cursor.updateRow(row) #update row halfway to avoid having to retype row[14] equation
 
-                    row[3] = sum(row[4:11]) #normalnum = sum(monday-sunday trips)
-                    row[14] = max(sum(row[4:11]) + row[13], 0) #adjustnum = normalnum + date_weekavg
+                    row[4] = sum(row[5:12]) #normalnum = sum(monday-sunday trips)
+                    row[15] = max(sum(row[5:12]) + row[14], 0) #adjustnum = normalnum + date_weekavg
 
-                    if datetime.strptime(str(row[1]), '%Y%m%d') > datetime.now() and current == True:  # If start_date > current date
-                        row[3] = 0
-                        row[14] = 0
+                    try:
+                        sdate = datetime.strptime(str(row[2]), '%Y%m%d')
+                    except:
+                        sdate = dateutil.parser.parse(row[2])
+
+                    if sdate > datetime.now() and current == True:  # If start_date > current date
+                        row[4] = 0
+                        row[15] = 0
                     cursor.updateRow(row)
 
             #Join calendar to trips
