@@ -12,6 +12,7 @@ import io
 from BeautifulSoup import BeautifulSoup
 import zipfile
 import numpy as np
+import traceback
 import us
 import itertools
 from SpatialJoinLines_LargestOverlap import *
@@ -23,7 +24,10 @@ import urlparse
 
 
 pd.options.display.max_columns = 20
+pd.options.display.max_rows = 200
 arcpy.env.overwriteOutput = True
+arcpy.env.qualifiedFieldNames = True
+arcpy.CheckOutExtension("Spatial")
 
 rootdir = "D:\Mathis\ICSL\stormwater"
 USDOTdir = os.path.join(rootdir, "data\USDOT_0319")
@@ -35,21 +39,31 @@ UA = os.path.join(USDOTdir, '2010CensusUrbanizedArea/UrbanizedArea2010.shp')
 
 NED19proj = os.path.join(rootdir, 'results/ned19_psproj')
 NED13proj = os.path.join(rootdir, 'results/ned13_psproj')
-NED19smooth = os.path.join(rootdir, 'results/ned19_smooth')
-NED13smooth = os.path.join(rootdir, 'results/ned13_smooth')
+Seattleroads = os.path.join(rootdir, 'data/CitySeattle_20180601/Seattle_Streets/Seattle_Streets.shp')
+UTM10 = arcpy.SpatialReference(26910)
 
 #Output variables
 usdotgdb = os.path.join(resdir, 'usdot.gdb')
 hpms = os.path.join(USDOTdir, '2016.gdb/HPMS2016')
 hmps_spdl = os.path.join(usdotgdb, 'hpms_spdl')
-tiger16dir = os.path.join(rootdir, 'data/TIGER2016')
-rangetab19 = os.path.join(PSgdb, 'OSM_elv19range')
-rangetab13 = os.path.join(PSgdb, 'OSM_elv13range')
-rangetab19_smooth = os.path.join(PSgdb, 'OSM_elv19range_smooth')
-rangetab13_smooth = os.path.join(PSgdb, 'OSM_elv13range_smooth')
+
+NED19smooth = os.path.join(rootdir, 'results/ned19_smooth')
+NED13smooth = os.path.join(rootdir, 'results/ned13_smooth')
+rangetab19 = os.path.join(PSgdb, 'hpms_elv19range')
+rangetab13 = os.path.join(PSgdb, 'hpms_elv13range')
+rangetab19_smooth = os.path.join(PSgdb, 'hpms_elv19range_smooth')
+rangetab13_smooth = os.path.join(PSgdb, 'hpms_elv13range_smooth')
 sroadsras = os.path.join(PSgdb, 'Seattle_roadras')
 srangetab19 = os.path.join(PSgdb, 'Seattle_elv19range')
 srangetab13 = os.path.join(PSgdb, 'Seattle_elv13range')
+
+tiger16dir = os.path.join(rootdir, 'data/TIGER2016')
+tigerroads = os.path.join(usdotgdb, 'tigerroads_merge')
+tigerroads_sub = os.path.join(usdotgdb, 'tigerroads_sub')
+
+hpms_sub = os.path.join(usdotgdb, 'hpms_subset')
+hpms_dens = os.path.join(usdotgdb, 'hpms_dens')
+hpms_split = os.path.join(usdotgdb, 'hpms_split')
 
 if not arcpy.Exists(usdotgdb):
     arcpy.CreateFileGDB_management(resdir, out_name = 'usdot')
@@ -79,6 +93,18 @@ def get_filename_from_cd(url):
     if len(fname) == 0:
         return None
     return fname[0]
+
+def unzip(infile):
+    #Unzip folder
+    if zipfile.is_zipfile(infile):
+        print('Unzipping {}...'.format(os.path.split(infile)[1]))
+        with zipfile.ZipFile(infile) as zipf:
+            zipfilelist = [info.filename for info in zipf.infolist()]
+            listcheck = [f for f in zipfilelist if os.path.exists(os.path.join(infile, f))]
+            if len(listcheck) > 0:
+                print('Overwriting {}...'.format(', '.join(listcheck)))
+            zipf.extractall(os.path.split(infile)[0])
+        del zipf
 
 def dlfile(url, outpath, outfile=None, fieldnames=None):
     """Function to download file from URL path and unzip it.
@@ -135,20 +161,8 @@ def dlfile(url, outpath, outfile=None, fieldnames=None):
         if os.path.exists(out):
             os.remove(out)
 
-    #Unzip folder
-    if zipfile.is_zipfile(out):
-        print('Unzipping {}...'.format(os.path.split(out)[1]))
-        with zipfile.ZipFile(out) as zipf:
-            zipfilelist = [info.filename for info in zipf.infolist()]
-            listcheck = [f for f in zipfilelist if os.path.exists(os.path.join(out, f))]
-            if len(listcheck) > 0:
-                print('Overwriting {}...'.format(', '.join(listcheck)))
-            zipf.extractall(os.path.split(out)[0])
-        del zipf
-
-
-# url = "ftp://ftp2.census.gov/geo/tiger/TIGER2016/ROADS/tl_2016_04013_roads.zip"
-# out = "D:\Mathis\ICSL\stormwater\data\TIGER2016/tl_2016_04013_roads.zip"
+    #Unzip downloaded file
+    unzip(out)
 
 def downloadroads(countyfipslist, year=None, outdir=None):
     if year is None:
@@ -164,6 +178,7 @@ def downloadroads(countyfipslist, year=None, outdir=None):
 
     #Open ftp connection
     try:
+        failedlist = []
         rooturl = "ftp://ftp2.census.gov/geo/tiger/TIGER{0}/ROADS".format(year)
         urlp = urlparse.urlparse(rooturl)
         ftp = ftplib.FTP(urlp.netloc)
@@ -180,8 +195,13 @@ def downloadroads(countyfipslist, year=None, outdir=None):
             if not os.path.exists(out):
                 # ftp download
                 print "downloading " + outfile
-                with open(out, 'w') as fobj:
-                    ftp.retrbinary('RETR {}'.format(outfile), fobj.write)
+                try:
+                    with open(out, 'wb') as fobj: #using 'w' as mode argument will create invalid zip files
+                        ftp.retrbinary('RETR {}'.format(outfile), fobj.write)
+                except Exception:
+                    traceback.print_exc()
+                    failedlist.append(county_code)
+                    pass
 
                 ######DID NOT WORK
                 # urllib.urlretrieve(url, out)
@@ -204,10 +224,12 @@ def downloadroads(countyfipslist, year=None, outdir=None):
             else:
                 print('{} already exists... skipping'.format(outfile))
             x += 1
-            print('{}% of county-level data downloaded'.format(100 * round(x / N, 2)))
+            print('{}% of county-level data downloaded'.format(100 * x / N))
     finally:
         if ftp:
             ftp.quit()
+        if len(failedlist) > 0:
+            print('{} failed to download...'.format(','.join(failedlist)))
 
 ########################################################################################################################
 # COMPUTE FUNCTIONAL-CLASS BASED AADT AVERAGE FOR EVERY STATE
@@ -360,11 +382,31 @@ missingcountyfips_list = list(missingcountyfips['STATEFP'].astype(str).str.zfill
 #Download shapefile data for all counties with missing local roads in the US
 downloadroads(countyfipslist=missingcountyfips_list, year=2016, outdir=tiger16dir)
 
-#Merge all these layers
+#Unzip shapefiles
+for county_code in missingcountyfips_list:
+    outbase = 'tl_2016_{}_roads'.format(county_code)
+    if not arcpy.Exists(os.path.join(tiger16dir, '{}.shp'.format(outbase))):
+        inzip = os.path.join(tiger16dir, '{}.zip'.format(outbase))
+        if os.path.exists(inzip):
+            unzip(inzip)
+        else:
+            print('{} has not yet been downloaded...'.format(outbase))
+    else:
+        print('{} already exists...'.format('{}.shp'.format(outbase)))
 
+#Merge all these layers
+tigerlist = [os.path.join(dirpath, file)
+              for (dirpath, dirnames, filenames) in os.walk(tiger16dir)
+              for file in filenames if re.search('tl_2016_[0-9]{5}_roads.shp$', file)]
+arcpy.Merge_management(tigerlist, tigerroads)
+
+############UNTESTED ##############
 #Subselect to only keep MTFCC IN ('S1400','S1640) https://www2.census.gov/geo/pdfs/reference/mtfccs2018.pdf
+arcpy.MakeFeatureLayer_management(tigerroads, 'tigerroads_lyr', where_clause = "MTFCC IN ('S1400','S1640')")
+arcpy.CopyFeatures_management('tigerroads_lyr', tigerroads_sub)
 
 #Intersect with urbanized area boundaries to add urban code
+arcpy.SpatialJoin_analysis(tigerroads_sub, )
 
 #Add aadt_filled field
 
@@ -376,56 +418,126 @@ downloadroads(countyfipslist=missingcountyfips_list, year=2016, outdir=tiger16di
 
 #Merge with hpms
 
+##############
+
 ########################################################################################################################
 # COMPUTE FUNCTIONAL-CLASS BASED SPEED LIMIT AVERAGE FOR EVERY STATE
 ########################################################################################################################
-#Make sure to replace 0s by NULLs
+#Get average and median speed limit for each functional class in every state
 arcpy.MakeFeatureLayer_management(hpms, 'hpmslyr')
 query = "speed_limit > 0"
 arcpy.SelectLayerByAttribute_management('hpmslyr', 'NEW_SELECTION', where_clause=query)
 arcpy.GetCount_management('hpmslyr')
-arcpy.Statistics_analysis(hpms, hmps_spdl, statistics_fields=[['Speed_Limit','MEAN'],['Speed_Limit','MEDIAN']],
-                          case_field=['state_code', 'f_system', 'urban_code'])
+spdltab = pd.DataFrame(
+    arcpy.da.TableToNumPyArray('hpmslyr', field_names=('state_code', 'f_system', 'urban_code','speed_limit')))
+spdltab['urban'] = np.where(spdltab['urban_code'].isin([0, 99999]), 'rural', 'urban')
 
+#Get average and median speed limit for each functional class in every state
+spdlstats = spdltab.groupby(['state_code', 'f_system', 'urban']). \
+    aggregate({'speed_limit':['mean','median','count']}). \
+    unstack(level=[1,2]).\
+    stack(level=[2,3], dropna=False). \
+    reset_index()
+spdlstats.columns = [''.join(col).strip() for col in spdlstats.columns.values]
+
+#Fill in values for all f_class in case simply no record of speed for that f_class in that state
+def wavg(group):
+    return(np.sum(group.speed_limitmedian*group.speed_limitcount)/group.speed_limitcount.sum())
+spdlstats_US = (5*np.floor(spdlstats.groupby(['f_system','urban']).apply(wavg)/5)).reset_index() #Compute weighted average of median at US level floored to the closest 5 mph
+spdlstats_US.rename(columns={0: 'meanUSmedian'}, inplace=True)
+spdlstats_filled = spdlstats.merge(spdlstats_US, on=['f_system','urban'])
+spdsub = (spdlstats_filled['speed_limitmedian'].isna()) | (spdlstats_filled['speed_limitcount']<50)
+spdlstats_filled.loc[spdsub, 'speed_limitmedian'] = spdlstats_filled.loc[spdsub, 'meanUSmedian']
+
+#Assign median state-specific 'local roads' speed limit to those road segments without an f_system attribute
+spdlstats_filled.loc[spdlstats['f_system']==0, 'speed_limitmedian'].replace(
+    spdlstats_filled.loc[spdlstats_filled['f_system']==1, 'speed_limitmedian'])
+
+spdlstats_filled.to_csv(os.path.join(resdir, 'check.csv'))
 
 ########################################################################################################################
 # PREPARE DATA ON ROAD GRADIENTS
 ########################################################################################################################
-hpms_sub = os.path.join(usdotgdb, 'hpms_subset')
-hpms_dens = os.path.join(usdotgdb, 'hpms_dens')
 arcpy.CopyFeatures_management(hpms, hpms_dens)
 #Densify roads
 arcpy.Describe(hpms_sub).SpatialReference.linearUnitName #Check that crs is in meters
 arcpy.Densify_edit(hpms_sub, densification_method='DISTANCE', distance='10', max_deviation='1.5')
 #Split at vertices
-hpms_split = os.path.join(usdotgdb, 'hpms_split')
 arcpy.SplitLine_management(hpms_sub,hpms_split)
-#Zonal statistics by OBJECTID
+
+#Run on  NED 19 max-min for split line
 arcpy.PolylineToRaster_conversion(hpms_split, 'OBJECTID', hpms_sub + '19', cell_assignment='MAXIMUM_COMBINED_LENGTH',
                                   priority_field= 'aadt_filled', cellsize = NED19proj)
+ZonalStatisticsAsTable(hpms_sub + '19', 'Value', NED19proj, out_table = rangetab19, statistics_type= 'RANGE', ignore_nodata='NODATA')
+
+#Run on smoothed NED 19 max-min for split line
+rectngh = NbrRectangle(3, 3, 'CELL')
+ned19_smooth = FocalStatistics(NED19proj, neighborhood=rectngh, statistics_type='MEAN', ignore_nodata='DATA')
+ned19_smooth.save(NED19smooth)
+ZonalStatisticsAsTable(hpms_sub + '19', 'Value', NED19smooth, out_table = rangetab19_smooth,
+                       statistics_type= 'RANGE', ignore_nodata='NODATA')
+
+#Run on  NED 13 max-min for split line
+arcpy.PolylineToRaster_conversion(hpms_split, 'OBJECTID', hpms_sub + '13', cell_assignment='MAXIMUM_COMBINED_LENGTH',
+                                  priority_field= 'aadt_filled', cellsize = NED13proj)
+ZonalStatisticsAsTable(hpms_sub + '13', 'Value', NED13proj, out_table = rangetab13, statistics_type= 'RANGE', ignore_nodata='NODATA')
+
+#Run on smoothed NED 13 max-min for split line
+rectngh = NbrRectangle(3, 3, 'CELL')
+ned13_smooth = FocalStatistics(NED13proj, neighborhood=rectngh, statistics_type='MEAN', ignore_nodata='DATA')
+ned13_smooth.save(NED13smooth)
+ZonalStatisticsAsTable(hpms_sub + '13', 'Value', NED13smooth, out_table = rangetab13_smooth,
+                       statistics_type= 'RANGE', ignore_nodata='NODATA')
+
+#Rejoin to split lines to get length
+arcpy.MakeFeatureLayer_management(hpms_split, 'hpmssub_lyr')
+arcpy.AddJoin_management('hpmssub_lyr', 'OBJECTID', rangetab19, 'Value')
+arcpy.AddJoin_management('hpmssub_lyr', 'OBJECTID', rangetab13, 'Value')
+arcpy.AddJoin_management('hpmssub_lyr', 'OBJECTID', rangetab19_smooth, 'Value')
+arcpy.AddJoin_management('hpmssub_lyr', 'OBJECTID', rangetab13_smooth, 'Value')
+arcpy.CopyFeatures_management('hpmssub_lyr', hpms_split + 'elv') #Often stays stuck in Python
+
+#Compute slope
+
 #Rejoin to main
+
 #Average by streetID
 
-# #Run on NED19 max-min for line itself
-# arcpy.PolylineToRaster_conversion(PSOSM_allproj, 'osm_id', PSOSMras + '19', cell_assignment='MAXIMUM_COMBINED_LENGTH',
-#                                   priority_field= 'fclassADT', cellsize = NED19proj)
-# ZonalStatisticsAsTable(PSOSMras + '19', 'osm_id', NED19proj, out_table = rangetab19, statistics_type= 'RANGE', ignore_nodata='NODATA')
-#
-# #Run on NED13 max-min for line itself
-# arcpy.PolylineToRaster_conversion(PSOSM_allproj, 'osm_id', PSOSMras + '13', cell_assignment='MAXIMUM_COMBINED_LENGTH',
-#                                   priority_field= 'fclassADT', cellsize = NED13proj)
-# ZonalStatisticsAsTable(PSOSMras + '13', 'osm_id', NED13proj, out_table = rangetab13, statistics_type= 'RANGE', ignore_nodata='NODATA')
-#
-# #Run on smoothed NED 19 max-min for line itself
-# ned19_smooth = FocalStatistics(NED19proj, NbrRectangle(3, 3, 'cells'), statistics_type='MEDIAN', ignore_nodata='DATA')
-# ned19_smooth.save(NED19smooth)
-# ZonalStatisticsAsTable(PSOSMras + '19', 'osm_id', NED19smooth, out_table = rangetab19_smooth, statistics_type= 'RANGE', ignore_nodata='NODATA')
-#
-# #Run on smoothed NED 13 max-min for line itself
-# ned13_smooth = FocalStatistics(NED13proj, NbrRectangle(3, 3, 'cells'), statistics_type='MEDIAN', ignore_nodata='DATA')
-# ned13_smooth.save(NED13smooth)
-# ZonalStatisticsAsTable(PSOSMras + '13', 'osm_id', NED13smooth, out_table = rangetab13_smooth, statistics_type= 'RANGE', ignore_nodata='NODATA')
-#
+
+#Compare to Seattle roads slope values. Apply same method to Seattle road dataset
+Seattleroadsproj = os.path.join(PSgdb, 'Seattle_roadproj')
+roadproj = arcpy.Project_management(Seattleroads, Seattleroadsproj, UTM10)
+#Densify roads
+arcpy.Densify_edit(Seattleroadsproj, densification_method='DISTANCE', distance='10', max_deviation='1.5')
+#Split at vertices
+arcpy.SplitLine_management(Seattleroadsproj,Seattleroadsproj + 'split')
+
+#Compute statistics
+arcpy.PolylineToRaster_conversion(Seattleroadsproj + 'split', 'OBJECTID_1', sroadsras, cell_assignment='MAXIMUM_COMBINED_LENGTH',
+                                  priority_field= 'SURFACEWID', cellsize = NED19proj)
+ZonalStatisticsAsTable(sroadsras, 'Value', NED19proj, out_table = srangetab19,
+                       statistics_type= 'RANGE', ignore_nodata='NODATA')
+ZonalStatisticsAsTable(sroadsras, 'Value', NED19smooth, out_table = srangetab19 + '_smooth',
+                       statistics_type= 'RANGE', ignore_nodata='NODATA')
+
+arcpy.PolylineToRaster_conversion(Seattleroadsproj + 'split', 'OBJECTID_1', sroadsras, cell_assignment='MAXIMUM_COMBINED_LENGTH',
+                                  priority_field= 'SURFACEWID', cellsize = NED13proj)
+ZonalStatisticsAsTable(sroadsras, 'Value', NED13proj, out_table = srangetab13,
+                       statistics_type= 'RANGE', ignore_nodata='NODATA')
+ZonalStatisticsAsTable(sroadsras, 'Value', NED13smooth, out_table = srangetab13 + '_smooth',
+                       statistics_type= 'RANGE', ignore_nodata='NODATA')
+
+arcpy.MakeFeatureLayer_management(Seattleroadsproj + 'split', 'sroads_lyr')
+arcpy.AddJoin_management('sroads_lyr', 'OBJECTID', srangetab19, 'Value')
+arcpy.AddJoin_management('sroads_lyr', 'OBJECTID', srangetab13, 'Value')
+arcpy.AddJoin_management('sroads_lyr', 'OBJECTID', srangetab19 + '_smooth', 'Value')
+arcpy.AddJoin_management('sroads_lyr', 'OBJECTID', srangetab13 + '_smooth', 'Value')
+arcpy.CopyFeatures_management('sroads_lyr', Seattleroadsproj + 'split_elev') #Often stays stuck in Python
+
+
+
+
+
 # #Join all data to road vector
 # arcpy.MakeFeatureLayer_management(PSOSM_allproj, 'osmroads')
 # arcpy.AddJoin_management('osmroads', 'osm_id', rangetab19, 'osm_id')
@@ -447,22 +559,6 @@ arcpy.PolylineToRaster_conversion(hpms_split, 'OBJECTID', hpms_sub + '19', cell_
 # arcpy.CalculateField_management(PSOSM_elv, 'gradient13', '!RANGE13!/!Shape_Length!', 'PYTHON')
 # arcpy.CalculateField_management(PSOSM_elv, 'gradient19_smooth', '!RANGE19smooth!/!Shape_Length!', 'PYTHON')
 # arcpy.CalculateField_management(PSOSM_elv, 'gradient13_smooth', '!RANGE13smooth!/!Shape_Length!', 'PYTHON')
-#
-# #Compare to Seattle roads slope values. Apply same method to Seattle road dataset
-# roadproj = arcpy.Project_management(roads, os.path.join(PSgdb, 'Seattle_roadproj'), UTM10)
-# arcpy.PolylineToRaster_conversion(roadproj, 'OBJECTID', sroadsras, cell_assignment='MAXIMUM_COMBINED_LENGTH',
-#                                   priority_field= 'SURFACEWID', cellsize = NED19proj)
-# ZonalStatisticsAsTable(sroadsras, 'Value', NED19proj, out_table = srangetab19,
-#                        statistics_type= 'RANGE', ignore_nodata='NODATA')
-# ZonalStatisticsAsTable(sroadsras, 'Value', NED19smooth, out_table = srangetab19 + '_smooth',
-#                        statistics_type= 'RANGE', ignore_nodata='NODATA')
-#
-# arcpy.PolylineToRaster_conversion(roadproj, 'OBJECTID', sroadsras, cell_assignment='MAXIMUM_COMBINED_LENGTH',
-#                                   priority_field= 'SURFACEWID', cellsize = NED13proj)
-# ZonalStatisticsAsTable(sroadsras, 'Value', NED13proj, out_table = srangetab13,
-#                        statistics_type= 'RANGE', ignore_nodata='NODATA')
-# ZonalStatisticsAsTable(sroadsras, 'Value', NED13smooth, out_table = srangetab13 + '_smooth',
-#                        statistics_type= 'RANGE', ignore_nodata='NODATA')
 #
 # # Fill in and adjust values for those roads outside of NED 1/9 extent
 # arcpy.AddField_management(PSOSM_elv, 'gradient_composite', 'FLOAT')
@@ -603,8 +699,6 @@ GTFStoSHPweeklynumber(gtfs_dir= NTMdir, out_gdb=os.path.join(rootdir, 'results/N
 #     print('Deleting {}...'.format(tile))
 #     arcpy.Delete_management(tile)
 # arcpy.ClearEnvironment('Workspace')
-
-
 
 
 ########################################################################################################################
