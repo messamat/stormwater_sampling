@@ -1,10 +1,12 @@
 import arcpy
+from arcpy.sa import *
 import pandas as pd
 import geopandas as gpd
 import os
 import re
 import requests
 import sys
+import urllib
 import urllib2
 import io
 from BeautifulSoup import BeautifulSoup
@@ -14,6 +16,11 @@ import us
 import itertools
 from SpatialJoinLines_LargestOverlap import *
 from GTFStoSHP import *
+import shutil
+import contextlib
+import ftplib
+import urlparse
+
 
 pd.options.display.max_columns = 20
 arcpy.env.overwriteOutput = True
@@ -22,19 +29,32 @@ rootdir = "D:\Mathis\ICSL\stormwater"
 USDOTdir = os.path.join(rootdir, "data\USDOT_0319")
 NTMdir = os.path.join(rootdir, "data\NTM_0319")
 resdir = os.path.join(rootdir, 'results/usdot')
+PSgdb=os.path.join(rootdir,'results/PSOSM.gdb')
 AQIgdb = os.path.join(rootdir, 'results/airdata/AQI.gdb')
 UA = os.path.join(USDOTdir, '2010CensusUrbanizedArea/UrbanizedArea2010.shp')
+
+NED19proj = os.path.join(rootdir, 'results/ned19_psproj')
+NED13proj = os.path.join(rootdir, 'results/ned13_psproj')
+NED19smooth = os.path.join(rootdir, 'results/ned19_smooth')
+NED13smooth = os.path.join(rootdir, 'results/ned13_smooth')
 
 #Output variables
 usdotgdb = os.path.join(resdir, 'usdot.gdb')
 hpms = os.path.join(USDOTdir, '2016.gdb/HPMS2016')
 hmps_spdl = os.path.join(usdotgdb, 'hpms_spdl')
+tiger16dir = os.path.join(rootdir, 'data/TIGER2016')
+rangetab19 = os.path.join(PSgdb, 'OSM_elv19range')
+rangetab13 = os.path.join(PSgdb, 'OSM_elv13range')
+rangetab19_smooth = os.path.join(PSgdb, 'OSM_elv19range_smooth')
+rangetab13_smooth = os.path.join(PSgdb, 'OSM_elv13range_smooth')
+sroadsras = os.path.join(PSgdb, 'Seattle_roadras')
+srangetab19 = os.path.join(PSgdb, 'Seattle_elv19range')
+srangetab13 = os.path.join(PSgdb, 'Seattle_elv13range')
 
 if not arcpy.Exists(usdotgdb):
     arcpy.CreateFileGDB_management(resdir, out_name = 'usdot')
 
-
-#Function to download file and unzip file
+#Function to download and unzip miscellaneous types of files
 #Partly inspired from https://www.codementor.io/aviaryan/downloading-files-from-urls-in-python-77q3bs0un
 def is_downloadable(url):
     """
@@ -60,19 +80,16 @@ def get_filename_from_cd(url):
         return None
     return fname[0]
 
-def dlfile(url, outpath, outfile=None):
+def dlfile(url, outpath, outfile=None, fieldnames=None):
     """Function to download file from URL path and unzip it.
     URL (required): URL of file to download
     outpath (required): the full path including
-    outfile (optional): the output name without file extension, otherwise gets it from URL"""
+    outfile (optional): the output name without file extension, otherwise gets it from URL
+    fieldnames (optional): fieldnames in output table if downloading plain text"""
 
-    # Open the url
-    if is_downloadable(url):
-        try:
-            f = requests.get(url, allow_redirects=True)
-            print "downloading " + url
-
-            #Get output file name
+    try:
+        if is_downloadable(url): #check that url is not just html
+            # Get output file name
             if outfile is None:
                 outfile = get_filename_from_cd(url)
                 if outfile is not None:
@@ -83,31 +100,114 @@ def dlfile(url, outpath, outfile=None):
                 out = os.path.join(outpath, outfile + os.path.splitext(url)[1])
             del outfile
 
+            #http request
+            f = requests.get(url, allow_redirects=True)
+            print "downloading " + url
+
             # Open local file for writing
             if not os.path.exists(out):
-                if 'csv' in f.headers.get('content-type').lower():
+                if 'csv' in f.headers.get('content-type').lower(): #If csv file
                     df = pd.read_csv(io.StringIO(f.text))
                     df.to_csv(out, index=False)
-                else:
+
+                elif f.headers.get('content-type').lower() == 'text/plain': #If plain text
+                    dialect = csv.Sniffer().sniff(f.text)
+                    txtF = csv.DictReader(f.text.split('\n'),
+                                          delimiter=dialect.delimiter,
+                                          fieldnames=fieldnames)
+                    with open(out, "wb") as local_file:
+                        writer = csv.DictWriter(local_file, fieldnames=fieldnames)
+                        writer.writeheader()
+                        for row in txtF:
+                            writer.writerow(row)
+
+                else: #Otherwise, just try reading
                     with open(out, "wb") as local_file:
                         local_file.write(f.read())
             else:
                 print('{} already exists...'.format(out))
 
-        #handle errors
-        except requests.exceptions.HTTPError, e:
-            print "HTTP Error:", e.code, url
+    #handle errors
+    except requests.exceptions.HTTPError, e:
+        print "HTTP Error:", e.code, url
+    except Exception as e:
+        print e
+        if os.path.exists(out):
+            os.remove(out)
 
-        #Unzip folder
-        if zipfile.is_zipfile(out):
-            print('Unzipping {}...'.format(os.path.split(out)[1]))
-            with zipfile.ZipFile(out) as zipf:
-                zipfilelist = [info.filename for info in zipf.infolist()]
-                listcheck = [f for f in zipfilelist if os.path.exists(os.path.join(out, f))]
-                if len(listcheck) > 0:
-                    print('Overwriting {}...'.format(', '.join(listcheck)))
-                zipf.extractall(os.path.split(out)[0])
-            del zipf
+    #Unzip folder
+    if zipfile.is_zipfile(out):
+        print('Unzipping {}...'.format(os.path.split(out)[1]))
+        with zipfile.ZipFile(out) as zipf:
+            zipfilelist = [info.filename for info in zipf.infolist()]
+            listcheck = [f for f in zipfilelist if os.path.exists(os.path.join(out, f))]
+            if len(listcheck) > 0:
+                print('Overwriting {}...'.format(', '.join(listcheck)))
+            zipf.extractall(os.path.split(out)[0])
+        del zipf
+
+
+# url = "ftp://ftp2.census.gov/geo/tiger/TIGER2016/ROADS/tl_2016_04013_roads.zip"
+# out = "D:\Mathis\ICSL\stormwater\data\TIGER2016/tl_2016_04013_roads.zip"
+
+def downloadroads(countyfipslist, year=None, outdir=None):
+    if year is None:
+        year=2018
+    if year < 2008:
+        raise ValueError("Roads data are not currently available via FTP for years prior to 2008.")
+    if outdir==None:
+        print('Downloading to {}...'.format(os.getcwd()))
+        outdir = os.getcwd()
+    if not os.path.exists(outdir):
+        print('Creating {}...'.format(outdir))
+        os.mkdir(outdir)
+
+    #Open ftp connection
+    try:
+        rooturl = "ftp://ftp2.census.gov/geo/tiger/TIGER{0}/ROADS".format(year)
+        urlp = urlparse.urlparse(rooturl)
+        ftp = ftplib.FTP(urlp.netloc)
+        ftp.login()
+        ftp.cwd(urlp.path)
+
+        #Iterate over county fips
+        x=0
+        N = len(countyfipslist)
+
+        for county_code in countyfipslist:
+            outfile = "tl_{0}_{1}_roads.zip".format(year, county_code)
+            out = os.path.join(outdir, outfile)
+            if not os.path.exists(out):
+                # ftp download
+                print "downloading " + outfile
+                with open(out, 'w') as fobj:
+                    ftp.retrbinary('RETR {}'.format(outfile), fobj.write)
+
+                ######DID NOT WORK
+                # urllib.urlretrieve(url, out)
+                ######KEPT HANGING
+                # try:
+                #     r = urllib2.urlopen(url)
+                #     print "downloading " + url
+                #     with open(out, 'wb') as f:
+                #         shutil.copyfileobj(r, f)
+                # finally:
+                #     if r:
+                #         r.close()
+
+                ######KEPT HANGING
+                # with contextlib.closing(urllib2.urlopen(url)) as ftprequest:
+                #     print "downloading " + url
+                #     with open(out, 'wb') as local_file:
+                #         shutil.copyfileobj(ftprequest, local_file)
+
+            else:
+                print('{} already exists... skipping'.format(outfile))
+            x += 1
+            print('{}% of county-level data downloaded'.format(100 * round(x / N, 2)))
+    finally:
+        if ftp:
+            ftp.quit()
 
 ########################################################################################################################
 # COMPUTE FUNCTIONAL-CLASS BASED AADT AVERAGE FOR EVERY STATE
@@ -116,13 +216,13 @@ def dlfile(url, outpath, outfile=None):
 #Highway Statistics Book 2017
 # Public road lenth 2017 - miles by functional system, Table HM-20: https://www.fhwa.dot.gov/policyinformation/statistics/2017/hm20.cfm
 hm20url = "https://www.fhwa.dot.gov/policyinformation/statistics/2017/hm20.cfm"
-hm20tab = os.path.join(USDOTdir, os.path.split(hm20urltab)[1])
 hm20_page = urllib2.urlopen(hm20url)
 hm20_soup = BeautifulSoup(hm20_page)
 hm20_regex = re.compile(".*hm20.*[.]xls")
 hm20urltab = os.path.split(hm20url)[0] + '/' + \
              '/'.join([i for i in hm20_soup.find('a', attrs={'href': hm20_regex}).get('href').split('/')
                        if i not in os.path.split(hm20url)[0].split('/')])
+hm20tab = os.path.join(USDOTdir, os.path.split(hm20urltab)[1])
 if not arcpy.Exists(hm20tab):
     dlfile(hm20urltab, hm20tab)
 else:
@@ -237,6 +337,46 @@ with arcpy.da.UpdateCursor(hpms, ['aadt', 'urban_code', 'aadt_filled', 'state_co
             cursor.updateRow(row)
 
 ########################################################################################################################
+# FILL IN LOCAL ROADS FOR STATE WHICH DID NOT SUBMIT TO THE HPMS
+########################################################################################################################
+#Identify states that did not include local roads
+fsystemtab = os.path.join(usdotgdb, 'hpms_fsystemstats')
+if not arcpy.Exists(fsystemtab):
+    arcpy.Statistics_analysis(hpms, statistics_fields=[['f_system','COUNT']], case_field=['state_code', 'f_system'])
+fsystemstats = pd.DataFrame(arcpy.da.TableToNumPyArray(fsystemtab, field_names=('state_code','f_system','frequency')))
+fsystemstats['proportion'] = fsystemstats['frequency']/\
+                             fsystemstats['frequency'].groupby(fsystemstats['state_code']).transform('sum')
+missingstatefips = list(fsystemstats[(fsystemstats['f_system']==7) & (fsystemstats['proportion']<0.1)]['state_code'])
+
+#Download list of all FIPS codes in the US (see https://www.census.gov/geo/reference/codes/cou.html for metadata)
+dlfile(url = 'https://www2.census.gov/geo/docs/reference/codes/files/national_county.txt', outpath = tiger16dir,
+       fieldnames = ['STATE', 'STATEFP', 'COUNTYFP', 'COUNTYNAME', 'CLASSFP'])
+fipslist = pd.read_csv(os.path.join(tiger16dir, 'national_county.txt'))
+
+missingcountyfips = fipslist[fipslist['STATEFP'].isin(missingstatefips)]
+missingcountyfips_list = list(missingcountyfips['STATEFP'].astype(str).str.zfill(2) +
+                              missingcountyfips['COUNTYFP'].astype(str).str.zfill(3))
+
+#Download shapefile data for all counties with missing local roads in the US
+downloadroads(countyfipslist=missingcountyfips_list, year=2016, outdir=tiger16dir)
+
+#Merge all these layers
+
+#Subselect to only keep MTFCC IN ('S1400','S1640) https://www2.census.gov/geo/pdfs/reference/mtfccs2018.pdf
+
+#Intersect with urbanized area boundaries to add urban code
+
+#Add aadt_filled field
+
+#Add state_code field
+
+#Add f_system field
+
+#Assign mean AADT from USAADT format
+
+#Merge with hpms
+
+########################################################################################################################
 # COMPUTE FUNCTIONAL-CLASS BASED SPEED LIMIT AVERAGE FOR EVERY STATE
 ########################################################################################################################
 #Make sure to replace 0s by NULLs
@@ -251,7 +391,90 @@ arcpy.Statistics_analysis(hpms, hmps_spdl, statistics_fields=[['Speed_Limit','ME
 ########################################################################################################################
 # PREPARE DATA ON ROAD GRADIENTS
 ########################################################################################################################
+hpms_sub = os.path.join(usdotgdb, 'hpms_subset')
+hpms_dens = os.path.join(usdotgdb, 'hpms_dens')
+arcpy.CopyFeatures_management(hpms, hpms_dens)
+#Densify roads
+arcpy.Describe(hpms_sub).SpatialReference.linearUnitName #Check that crs is in meters
+arcpy.Densify_edit(hpms_sub, densification_method='DISTANCE', distance='10', max_deviation='1.5')
+#Split at vertices
+hpms_split = os.path.join(usdotgdb, 'hpms_split')
+arcpy.SplitLine_management(hpms_sub,hpms_split)
+#Zonal statistics by OBJECTID
+arcpy.PolylineToRaster_conversion(hpms_split, 'OBJECTID', hpms_sub + '19', cell_assignment='MAXIMUM_COMBINED_LENGTH',
+                                  priority_field= 'aadt_filled', cellsize = NED19proj)
+#Rejoin to main
+#Average by streetID
 
+# #Run on NED19 max-min for line itself
+# arcpy.PolylineToRaster_conversion(PSOSM_allproj, 'osm_id', PSOSMras + '19', cell_assignment='MAXIMUM_COMBINED_LENGTH',
+#                                   priority_field= 'fclassADT', cellsize = NED19proj)
+# ZonalStatisticsAsTable(PSOSMras + '19', 'osm_id', NED19proj, out_table = rangetab19, statistics_type= 'RANGE', ignore_nodata='NODATA')
+#
+# #Run on NED13 max-min for line itself
+# arcpy.PolylineToRaster_conversion(PSOSM_allproj, 'osm_id', PSOSMras + '13', cell_assignment='MAXIMUM_COMBINED_LENGTH',
+#                                   priority_field= 'fclassADT', cellsize = NED13proj)
+# ZonalStatisticsAsTable(PSOSMras + '13', 'osm_id', NED13proj, out_table = rangetab13, statistics_type= 'RANGE', ignore_nodata='NODATA')
+#
+# #Run on smoothed NED 19 max-min for line itself
+# ned19_smooth = FocalStatistics(NED19proj, NbrRectangle(3, 3, 'cells'), statistics_type='MEDIAN', ignore_nodata='DATA')
+# ned19_smooth.save(NED19smooth)
+# ZonalStatisticsAsTable(PSOSMras + '19', 'osm_id', NED19smooth, out_table = rangetab19_smooth, statistics_type= 'RANGE', ignore_nodata='NODATA')
+#
+# #Run on smoothed NED 13 max-min for line itself
+# ned13_smooth = FocalStatistics(NED13proj, NbrRectangle(3, 3, 'cells'), statistics_type='MEDIAN', ignore_nodata='DATA')
+# ned13_smooth.save(NED13smooth)
+# ZonalStatisticsAsTable(PSOSMras + '13', 'osm_id', NED13smooth, out_table = rangetab13_smooth, statistics_type= 'RANGE', ignore_nodata='NODATA')
+#
+# #Join all data to road vector
+# arcpy.MakeFeatureLayer_management(PSOSM_allproj, 'osmroads')
+# arcpy.AddJoin_management('osmroads', 'osm_id', rangetab19, 'osm_id')
+# arcpy.AddJoin_management('osmroads', 'osm_id', rangetab13, 'osm_id')
+# arcpy.AddJoin_management('osmroads', 'osm_id', rangetab19_smooth, 'osm_id')
+# arcpy.AddJoin_management('osmroads', 'osm_id', rangetab13_smooth, 'osm_id')
+# arcpy.CopyFeatures_management('osmroads', PSOSM_elv) #Often stays stuck in Python
+#
+# arcpy.AlterField_management(PSOSM_elv, 'RANGE', 'RANGE19', 'RANGE19')
+# arcpy.AlterField_management(PSOSM_elv, 'RANGE_1', 'RANGE13', 'RANGE13')
+# arcpy.AlterField_management(PSOSM_elv, 'RANGE_12', 'RANGE19smooth', 'RANGE19smooth')
+# arcpy.AlterField_management(PSOSM_elv, 'RANGE_12_13', 'RANGE13smooth', 'RANGE13smooth')
+#
+# arcpy.AddField_management(PSOSM_elv, 'gradient19', 'FLOAT')
+# arcpy.AddField_management(PSOSM_elv, 'gradient13', 'FLOAT')
+# arcpy.AddField_management(PSOSM_elv, 'gradient19_smooth', 'FLOAT')
+# arcpy.AddField_management(PSOSM_elv, 'gradient13_smooth', 'FLOAT')
+# arcpy.CalculateField_management(PSOSM_elv, 'gradient19', '!RANGE19!/!Shape_Length!', 'PYTHON')
+# arcpy.CalculateField_management(PSOSM_elv, 'gradient13', '!RANGE13!/!Shape_Length!', 'PYTHON')
+# arcpy.CalculateField_management(PSOSM_elv, 'gradient19_smooth', '!RANGE19smooth!/!Shape_Length!', 'PYTHON')
+# arcpy.CalculateField_management(PSOSM_elv, 'gradient13_smooth', '!RANGE13smooth!/!Shape_Length!', 'PYTHON')
+#
+# #Compare to Seattle roads slope values. Apply same method to Seattle road dataset
+# roadproj = arcpy.Project_management(roads, os.path.join(PSgdb, 'Seattle_roadproj'), UTM10)
+# arcpy.PolylineToRaster_conversion(roadproj, 'OBJECTID', sroadsras, cell_assignment='MAXIMUM_COMBINED_LENGTH',
+#                                   priority_field= 'SURFACEWID', cellsize = NED19proj)
+# ZonalStatisticsAsTable(sroadsras, 'Value', NED19proj, out_table = srangetab19,
+#                        statistics_type= 'RANGE', ignore_nodata='NODATA')
+# ZonalStatisticsAsTable(sroadsras, 'Value', NED19smooth, out_table = srangetab19 + '_smooth',
+#                        statistics_type= 'RANGE', ignore_nodata='NODATA')
+#
+# arcpy.PolylineToRaster_conversion(roadproj, 'OBJECTID', sroadsras, cell_assignment='MAXIMUM_COMBINED_LENGTH',
+#                                   priority_field= 'SURFACEWID', cellsize = NED13proj)
+# ZonalStatisticsAsTable(sroadsras, 'Value', NED13proj, out_table = srangetab13,
+#                        statistics_type= 'RANGE', ignore_nodata='NODATA')
+# ZonalStatisticsAsTable(sroadsras, 'Value', NED13smooth, out_table = srangetab13 + '_smooth',
+#                        statistics_type= 'RANGE', ignore_nodata='NODATA')
+#
+# # Fill in and adjust values for those roads outside of NED 1/9 extent
+# arcpy.AddField_management(PSOSM_elv, 'gradient_composite', 'FLOAT')
+# with arcpy.da.UpdateCursor(PSOSM_elv, ['gradient_composite','gradient19_smooth', 'gradient13_smooth']) as cursor:
+#     for row in cursor:
+#         if row[1] is not None:
+#             row[0] = min(row[1], 0.5)
+#         elif row[2] is not None:
+#             row[0] = min(row[2], 0.5)
+#         else:
+#             pass
+#         cursor.updateRow(row)
 
 ########################################################################################################################
 # PREPARE TRANSIT DATA TO CREATE HEATMAP BASED ON BUS ROUTES
