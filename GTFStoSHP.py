@@ -24,12 +24,15 @@ Acknowledgement to http://www.stevencanplan.com/2010/10/how-to-convert-gtfs-to-s
 '''
 
 import arcpy
+import pandas as pd
+import fiona
 import os
 import re
 import csv
 import zipfile
 import logging
 import dateutil.parser
+import traceback
 from collections import defaultdict
 from datetime import datetime
 
@@ -38,15 +41,15 @@ arcpy.env.qualifiedFieldNames = False
 
 #--------------------------------------------------------------
 # FOR TROUBLESHOOTING
-# rootdir = 'D:/Mathis/ICSL/stormwater/'
-# gtfs_dir= os.path.join(rootdir, 'data/NTM_0319')
-# out_gdb=os.path.join(rootdir, 'results/NTM.gdb')
-# out_fc = 'NTM'
-# keep = True
-# outdir = gtfs_dir
-# infile = os.path.join(gtfs_dir,'NTM_trips.csv')
-# arcpy.env.workspace = out_gdb
-# #shapesf = 'D:\Mathis\ICSL\stormwater\data\TransitWiki201812\shapes.txt'
+rootdir = 'D:/Mathis/ICSL/stormwater/'
+gtfs_dir= os.path.join(rootdir, 'data/NTM_0319')
+out_gdb=os.path.join(rootdir, 'results/NTM.gdb')
+out_fc = 'NTM'
+keep = True
+outdir = gtfs_dir
+infile = os.path.join(gtfs_dir,'NTM_trips.csv')
+arcpy.env.workspace = out_gdb
+#shapesf = 'D:\Mathis\ICSL\stormwater\data\TransitWiki201812\shapes.txt'
 #--------------------------------------------------------------
 
 def format_schema_import(infile, outdir):
@@ -113,8 +116,8 @@ def delete_intoutput(dir, ziplist, intlist) :
     for inter_lyr in intlist:  # Delete intermediate GIS layers
         try:
             arcpy.Delete_management(inter_lyr)
-        except Exception as e:
-            print(e)
+        except Exception:
+            traceback.print_exc()
             pass
 
 def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
@@ -135,7 +138,7 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
                 with zipfile.ZipFile(gtfs_dir) as zipf:
                     zipfilelist = [info.filename for info in zipf.infolist()]
                     print('Overwriting {}...'.format(', '.join(
-                        [f for f in zipfilelist if os.path.exists(os.path.join(gtfs_rootdir, f))])))
+                        [f for f in zipfilelist if os.path.exists(os.path.join(gtfs_dir, f))])))
                     zipf.extractall(os.path.split(gtfs_dir)[0])
                 del zipf
                 gtfs_rootdir = os.path.split(gtfs_dir)[0]
@@ -202,7 +205,7 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
                                 lineformat.append((float(line['shape_pt_lon']), float(line['shape_pt_lat']))) #Add coordinate tuple
                                 cursor.insertRow(tuple(lineformat))
                             except Exception as e:
-                                print(e)
+                                traceback.print_exc()
                                 logging.warning('{0} \n Error row: {1}'.format(e, line))
 
                 #Convert to polyline
@@ -236,7 +239,7 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
                 # Create a dictionary to store number of dates for each exception_type: 1 service added, 2 service removed
                 cal_dic = defaultdict(lambda: [0] * 2)
                 for line in cal_F:
-                    dkey = '{0}_{1}'.format(line['AgencyName'], line['service_id'])
+                    dkey = '{0}._.{1}'.format(line['AgencyName'], line['service_id'])
                     cal_dic[dkey][int(line['exception_type']) - 1] += 1
 
             '''Each route has multiple trips
@@ -266,7 +269,7 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
 
             with arcpy.da.UpdateCursor('calendar', cal_fields) as cursor:
                 for row in cursor:
-                    dkey = '{0}_{1}'.format(row[0], row[1])
+                    dkey = '{0}._.{1}'.format(row[0], row[1])
                     print(dkey)
                     try:
                         service_len = max((datetime.strptime(str(row[3]), '%Y%m%d') -
@@ -300,20 +303,83 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
                         row[15] = 0
                     cursor.updateRow(row)
 
-            #Join calendar to trips
+            #Join calendar and routes to trips
+            arcpy.AddField_management('trips', 'Agency_service_id', 'TEXT')
+            arcpy.AddField_management('trips', 'Agency_route_id', 'TEXT')
+            with arcpy.da.UpdateCursor('trips', ['Agency_service_id', 'AgencyName', 'service_id',
+                                                 'Agency_route_id', 'route_id']) as cursor:
+                for row in cursor:
+                    row[0] = '{0}._.{1}'.format(row[1], row[2])
+                    row[3] = '{0}._.{1}'.format(row[1], row[4])
+                    cursor.updateRow(row)
+
+            arcpy.AddField_management('calendar', 'Agency_service_id', 'TEXT')
+            with arcpy.da.UpdateCursor('calendar', ['Agency_service_id', 'AgencyName', 'service_id']) as cursor:
+                for row in cursor:
+                    row[0] = '{0}._.{1}'.format(row[1], row[2])
+                    cursor.updateRow(row)
+
+            arcpy.AddField_management('routes', 'Agency_route_id', 'TEXT')
+            with arcpy.da.UpdateCursor('routes', ['Agency_route_id', 'AgencyName', 'route_id']) as cursor:
+                for row in cursor:
+                    row[0] = '{0}._.{1}'.format(row[1], row[2])
+                    cursor.updateRow(row)
+
             arcpy.MakeTableView_management('trips', 'trips_view')
-            arcpy.AddJoin_management('trips_view', 'service_id', 'calendar', 'service_id', join_type='KEEP_ALL')
-            arcpy.AddJoin_management('trips_view', 'route_id', 'routes', 'route_id', join_type='KEEP_ALL')
+            arcpy.AddJoin_management('trips_view', 'Agency_service_id', 'calendar', 'Agency_service_id', join_type='KEEP_ALL')
+            arcpy.AddJoin_management('trips_view', 'Agency_route_id', 'routes', 'Agency_route_id', join_type='KEEP_ALL')
             arcpy.CopyRows_management('trips_view', 'trips_routes_calendar')
 
             #Summarize trips by route_id & shape_id (here add
-            arcpy.Statistics_analysis('trips_routes_calendar', 'trips_routes_count',
-                                      statistics_fields=[['normalnum', 'SUM'], ['adjustnum', 'SUM'],
-                                                         #['direction_id', 'FIRST'], ['direction_id', 'LAST'],
-                                                         ['service_len', 'MIN'], ['service_len', 'MAX']],
-                                      case_field = ['shape_id', 'route_id', 'route_short_name',
-                                                    'route_desc', 'route_type'])
+            #Compute statistics in dictionary
+            trc_dic = defaultdict(lambda: [0, 0, 1000000, 0])
+            cfields = ['shape_id', 'AgencyName', 'route_id', 'route_type', 'normalnum', 'adjustnum', 'service_len']
+            fcount = arcpy.GetCount_management('trips_routes_calendar').getOutput(0)
+            with arcpy.da.SearchCursor('trips_routes_calendar', cfields) as cursor:
+                x=0
+                for row in cursor:
+                    ukey = '{0}._.{1}._.{2}._.{3}'.format(row[0], row[1], row[2], row[3])
+                    # 'normalnum', 'SUM'
+                    try:
+                        trc_dic[ukey][0] += row[4]
+                    except Exception:
+                        traceback.print_exc()
+                    # 'adjustnum', 'SUM'
+                    try:
+                        trc_dic[ukey][1] += row[5]
+                    except Exception:
+                        traceback.print_exc()
+                    # service_len MIN
+                    trc_dic[ukey][2] = row[6] if row[6] < trc_dic[ukey][2] else trc_dic[ukey][2]
+                    # service_len MAX
+                    trc_dic[ukey][3] = row[6] if row[6] > trc_dic[ukey][3] else trc_dic[ukey][3]
 
+                    if x % 100 == 0:
+                        print('Processing... {}%'.format(round(100*x/float(fcount), 2)))
+                    x += 1
+
+            #Convert dictionary to geodatabase table
+            arcpy.CreateTable_management(out_gdb, 'trips_routes_count')
+            tempfields = {}
+            for f in arcpy.ListFields('trips_routes_calendar'):
+                tempfields[f.name] = f.type
+            outfields = ['shape_id', 'AgencyName', 'route_id', 'route_type'] + \
+                     ['normalnum_SUM', 'adjustnum_SUM', 'service_len_MIN', 'service_len_MAX']
+            for f in outfields:
+                if f in tempfields:
+                    arcpy.AddField_management('trips_routes_count', f, field_type = tempfields[f])
+                else:
+                    arcpy.AddField_management('trips_routes_count', f, field_type = 'FLOAT')
+
+            with arcpy.da.InsertCursor('trips_routes_count', outfields) as cursor:
+                for k in trc_dic:
+                    try:
+                        ksplit = k.split('._.')
+                        lineformat = ksplit + trc_dic[k]
+                        cursor.insertRow(tuple(lineformat))
+                    except Exception as e:
+                        traceback.print_exc()
+                        logging.warning('{0} \n Error row: {1}'.format(e, line))
             #-------------------------------------------------------------------------------------------------------------------
             # JOIN AND EXPORT DATE
             #-------------------------------------------------------------------------------------------------------------------
@@ -331,7 +397,7 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
                 try:
                     arcpy.Delete_management(inter_lyr)
                 except Exception as e:
-                    print(e)
+                    traceback.print_exc()
                     logging.error(e)
                     pass
 
@@ -342,7 +408,7 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
 
         #If an error is raised, delete intermediate outputs if keep == False
         except Exception as e:
-            print(e)
+            traceback.print_exc()
             logging.error(e)
             if keep == False:
                 delete_intoutput(dir = gtfs_rootdir, ziplist = zipfilelist,
