@@ -21,7 +21,7 @@ import shutil
 import contextlib
 import ftplib
 import urlparse
-
+from collections import defaultdict
 
 pd.options.display.max_columns = 20
 pd.options.display.max_rows = 200
@@ -35,12 +35,10 @@ NTMdir = os.path.join(rootdir, "data\NTM_0319")
 resdir = os.path.join(rootdir, 'results/usdot')
 PSgdb=os.path.join(rootdir,'results/PSOSM.gdb')
 AQIgdb = os.path.join(rootdir, 'results/airdata/AQI.gdb')
-UA = os.path.join(USDOTdir, '2010CensusUrbanizedArea/UrbanizedArea2010.shp')
 
 NED19proj = os.path.join(rootdir, 'results/ned19_psproj')
 NED13proj = os.path.join(rootdir, 'results/ned13_psproj')
-Seattleroads = os.path.join(rootdir, 'data/CitySeattle_20180601/Seattle_Streets/Seattle_Streets.shp')
-UTM10 = arcpy.SpatialReference(26910)
+
 
 #Output variables
 usdotgdb = os.path.join(resdir, 'usdot.gdb')
@@ -53,13 +51,14 @@ rangetab19 = os.path.join(PSgdb, 'hpms_elv19range')
 rangetab13 = os.path.join(PSgdb, 'hpms_elv13range')
 rangetab19_smooth = os.path.join(PSgdb, 'hpms_elv19range_smooth')
 rangetab13_smooth = os.path.join(PSgdb, 'hpms_elv13range_smooth')
-sroadsras = os.path.join(PSgdb, 'Seattle_roadras')
-srangetab19 = os.path.join(PSgdb, 'Seattle_elv19range')
-srangetab13 = os.path.join(PSgdb, 'Seattle_elv13range')
 
 tiger16dir = os.path.join(rootdir, 'data/TIGER2016')
 tigerroads = os.path.join(usdotgdb, 'tigerroads_merge')
 tigerroads_sub = os.path.join(usdotgdb, 'tigerroads_sub')
+tigerroads_UA = os.path.join(usdotgdb, 'tigerroads_UA')
+tigerroads_format = tigerroads_UA + 'states'
+states = os.path.join(tiger16dir, 'tl_2016_us_state/tl_2016_us_state.shp')
+hpmstiger = os.path.join(usdotgdb, 'hpmstiger')
 
 hpms_sub = os.path.join(usdotgdb, 'hpms_subset')
 hpms_dens = os.path.join(usdotgdb, 'hpms_dens')
@@ -163,6 +162,51 @@ def dlfile(url, outpath, outfile=None, fieldnames=None):
 
     #Unzip downloaded file
     unzip(out)
+
+def APIdownload(baseURL, workspace, basename, itersize, IDlist):
+    IDrange = range(IDlist[0], IDlist[1], itersize)
+    for i, j in itertools.izip(IDrange, IDrange[1:]):
+        arcpy.env.workspace = workspace
+        itertry = itersize
+        downlist = []
+        # It seems like REST API server also has a limitation on the size of the downloads so sometimes won't allow
+        # Therefore, if fails to download, try smaller increments until reaches increments of 2 if still fails at increments
+        # of 2, then throw a proper error and break
+        while True:
+            try:
+                IDrangetry = list(
+                    sorted(set(range(i, j + 1, itertry) + [j])))  # To make sure that the list goes until the maximum
+                # Loop with smaller increment within range
+                for k, l in itertools.izip(IDrangetry, IDrangetry[1:]):
+                    print('From {0} to {1}'.format(k, l))
+                    where = "OBJECTID>={0} AND OBJECTID<{1}".format(k, l)
+                    # &geometryType=esriGeometryPoint
+                    query = "?where={}&returnGeometry=true&f=json&outFields=*".format(where)
+                    fsURL = baseURL + query
+                    fs = arcpy.FeatureSet()
+                    fs.load(fsURL)
+                    if long(arcpy.GetCount_management(fs)[0]) > 0:
+                        outname = '{0}_{1}_{2}'.format(basename, k, l)
+                        downlist.append(outname)
+                        arcpy.CopyFeatures_management(fs, outname)
+                        print(outname)
+                    else:
+                        print('No data from OBJECTID {0} to OBJECTID {1}'.format(k, l))
+                break
+            except:
+                if itertry > 5:
+                    print('Count not download, delete previous {0} datasets, try downloading in smaller increments'.format(
+                        len(downlist)))
+                    if len(downlist) > 0:
+                        for fc in downlist:
+                            arcpy.Delete_management(fc)
+                        downlist = []
+                    itertry = itertry / 2
+                else:
+                    e = sys.exc_info()[1]
+                    print('Exit with error: ' + e.args[0])
+                    # sys.exit(1)
+                    break
 
 def downloadroads(countyfipslist, year=None, outdir=None):
     if year is None:
@@ -339,7 +383,7 @@ with arcpy.da.UpdateCursor(hpms, ['aadt', 'urban_code', 'aadt_filled', 'state_co
         print(row[5])
         if row[0] == 0: #If does not already have an AADT
             if row[4] == 0: #If no functional classification, assign local AADT
-                if row[1] in [0, 99998, 99999]: #If no urban_code (aka is a rural road or from small urban section)
+                if row[1] in [0, 99999]: #If no urban_code (aka is a rural road or from small urban section)
                     row[2] = USAADTformat[(USAADTformat['urban'] == 'RURAL') &
                                           (USAADTformat['state_code'] == row[3]) &
                                           (USAADTformat['F_SYSTEM'] == 7)]['AADT'][0]
@@ -348,7 +392,7 @@ with arcpy.da.UpdateCursor(hpms, ['aadt', 'urban_code', 'aadt_filled', 'state_co
                                           (USAADTformat['state_code'] == row[3]) &
                                           (USAADTformat['F_SYSTEM'] == 7)]['AADT'][0]
             else: #Otherwise, assign corresponding f-system aadt
-                if row[1] in [0, 99998, 99999]: #If no urban_code (aka is a rural road or from small urban section)
+                if row[1] in [0, 99999]: #If no urban_code (aka is a rural road or from small urban section)
                     row[2] = USAADTformat[(USAADTformat['urban'] == 'RURAL') &
                                           (USAADTformat['state_code'] == row[3]) &
                                           (USAADTformat['F_SYSTEM'] == row[4])]['AADT'][0]
@@ -400,25 +444,69 @@ tigerlist = [os.path.join(dirpath, file)
               for file in filenames if re.search('tl_2016_[0-9]{5}_roads.shp$', file)]
 arcpy.Merge_management(tigerlist, tigerroads)
 
-############UNTESTED ##############
 #Subselect to only keep MTFCC IN ('S1400','S1640) https://www2.census.gov/geo/pdfs/reference/mtfccs2018.pdf
 arcpy.MakeFeatureLayer_management(tigerroads, 'tigerroads_lyr', where_clause = "MTFCC IN ('S1400','S1640')")
+arcpy.GetCount_management('tigerroads_lyr')
 arcpy.CopyFeatures_management('tigerroads_lyr', tigerroads_sub)
 
-#Intersect with urbanized area boundaries to add urban code
-arcpy.SpatialJoin_analysis(tigerroads_sub, )
+#Intersect with urbanized area boundaries to add urban code (but can't find adjusted urban areas)
+#Download tiger 2016 urban area data (not adjusted)
+UA2016_url = 'http://www2.census.gov/geo/tiger/GENZ2016/shp/cb_2016_us_ua10_500k.zip'
+dlfile(UA2016_url, outpath=tiger16dir)
+UA2016 = '{}.shp'.format(os.path.join(tiger16dir,
+                                      os.path.splitext(os.path.split(UA2016_url)[1])[0]))
 
-#Add aadt_filled field
+#Download USDOT urban area boundary file (not adjusted)
+UA_API = 'https://geo.dot.gov/server/rest/services/NTAD/Urbanized_Areas/MapServer/0/query'
+#print("/server/rest" in requests.get(UA_API).headers.get('Path')) could make sure that it's a rest api
+APIdownload(baseURL=UA_API,
+            workspace=USDOTdir,
+            basename='USDOT_UA',
+            itersize=100,
+            IDlist=[0,10000])
+arcpy.Merge_management(arcpy.ListFeatureClasses('{}_*'.format('USDOT_UA')),output='{}'.format('USDOT_UA'))
+for fc in arcpy.ListFeatureClasses('{}_*'.format('USDOT_UA')):
+    arcpy.Delete_management(fc)
+    print('Deleted {}...'.format(fc))
 
-#Add state_code field
+#It seems that the tiger 2016 boundary file is the one that fits the HPMS urban codes best, so use that
+arcpy.SpatialJoin_analysis(tigerroads_sub, UA2016, tigerroads_UA, 'JOIN_ONE_TO_ONE',
+                           join_type='KEEP_ALL', match_option='INTERSECT')
+
+#Add state_code field by intersecting with state boundaries (https://www.census.gov/cgi-bin/geo/shapefiles/index.php?year=2016&layergroup=States+%28and+equivalent%29)
+arcpy.SpatialJoin_analysis(tigerroads_UA, states, tigerroads_format, 'JOIN_ONE_TO_ONE',
+                           join_type='KEEP_ALL', match_option='INTERSECT')
+arcpy.AddField_management(tigerroads_format, 'state_code', 'SHORT')
+arcpy.CalculateField_management(tigerroads_format, 'state_code', 'int(!STATEFP!)', 'PYTHON')
+
+#Assign mean AADT from USAADT format — add 'local road' (f_system = 7) to aadt_filled field
+if 'aadt_filled' not in [f.name for f in arcpy.ListFields(tigerroads_format)]:
+    arcpy.AddField_management(tigerroads_format, field_name = 'aadt_filled', field_type='LONG')
+else:
+    print('aadt_filled field already exists...')
+
+with arcpy.da.UpdateCursor(tigerroads_format, ['UATYP10', 'state_code', 'aadt_filled', 'OBJECTID']) as cursor:
+    for row in cursor:
+        print(row[3])
+        if row[0] in ['C', 'U']: #If in urban cluster or urban area
+            row[2] = USAADTformat[(USAADTformat['urban'] == 'URBAN') &
+                                  (USAADTformat['state_code'] == row[1]) &
+                                  (USAADTformat['F_SYSTEM'] == 7)]['AADT'][0]
+        else:
+            row[2] = USAADTformat[(USAADTformat['urban'] == 'RURAL') &
+                                  (USAADTformat['state_code'] == row[1]) &
+                                  (USAADTformat['F_SYSTEM'] == 7)]['AADT'][0]
+        cursor.updateRow(row)
 
 #Add f_system field
-
-#Assign mean AADT from USAADT format
+if 'f_system' not in [f.name for f in arcpy.ListFields(tigerroads_format)]:
+    arcpy.AddField_management(tigerroads_format, field_name = 'f_system', field_type='LONG')
+else:
+    print('f_system field already exists...')
+arcpy.CalculateField_management(tigerroads_format, 'f_system', 7, 'PYTHON')
 
 #Merge with hpms
-
-##############
+arcpy.Merge_management([hpms, tigerroads_format], hpmstiger)
 
 ########################################################################################################################
 # COMPUTE FUNCTIONAL-CLASS BASED SPEED LIMIT AVERAGE FOR EVERY STATE
@@ -453,11 +541,35 @@ spdlstats_filled.loc[spdsub, 'speed_limitmedian'] = spdlstats_filled.loc[spdsub,
 spdlstats_filled.loc[spdlstats['f_system']==0, 'speed_limitmedian'].replace(
     spdlstats_filled.loc[spdlstats_filled['f_system']==1, 'speed_limitmedian'])
 
-spdlstats_filled.to_csv(os.path.join(resdir, 'check.csv'))
+####################################RUN once hpmstiger is ready
+#Compute spdl_filled for hpms
+if 'spdl_filled' not in [f.name for f in arcpy.ListFields(hpmstiger)]:
+    arcpy.AddField_management(hpmstiger, field_name = 'spdl_filled', field_type='SHORT')
+else:
+    print('spdl_filled field already exists...')
+
+with arcpy.da.UpdateCursor(hpmstiger, ['speed_limit', 'spdl_filled', 'OBJECTID', 'urban_code', 'UATYP10',
+                                       'state_code', 'f_system']) as cursor:
+    for row in cursor:
+        if row[0] != 0: #If already speed limit data
+            row[1] = row[0] #Use that value for spdl_filled
+        else: #If no speed limit data
+            print(row[2])
+            if row[3] not in ['0', '99999'] and row[4] in ['U', 'C']: #If urban
+                row[1] = spdlstats_filled[(spdlstats_filled['urban'] == 'urban') &
+                                          (spdlstats_filled['state_code'] == row[5]) &
+                                          (spdlstats_filled['f_system'] == row[6]), 'speed_limitmedian'][0]
+            else: #if rural
+                row[1] = spdlstats_filled[(spdlstats_filled['urban'] == 'rural') &
+                                          (spdlstats_filled['state_code'] == row[5]) &
+                                          (spdlstats_filled['f_system'] == row[6]), 'speed_limitmedian'][0]
+        cursor.updateRow(row)
 
 ########################################################################################################################
 # PREPARE DATA ON ROAD GRADIENTS
 ########################################################################################################################
+#Select subset of hpms to
+
 arcpy.CopyFeatures_management(hpms, hpms_dens)
 #Densify roads
 arcpy.Describe(hpms_sub).SpatialReference.linearUnitName #Check that crs is in meters
@@ -503,39 +615,7 @@ arcpy.CopyFeatures_management('hpmssub_lyr', hpms_split + 'elv') #Often stays st
 
 #Average by streetID
 
-
-#Compare to Seattle roads slope values. Apply same method to Seattle road dataset
-Seattleroadsproj = os.path.join(PSgdb, 'Seattle_roadproj')
-roadproj = arcpy.Project_management(Seattleroads, Seattleroadsproj, UTM10)
-#Densify roads
-arcpy.Densify_edit(Seattleroadsproj, densification_method='DISTANCE', distance='10', max_deviation='1.5')
-#Split at vertices
-arcpy.SplitLine_management(Seattleroadsproj,Seattleroadsproj + 'split')
-
-#Compute statistics
-arcpy.PolylineToRaster_conversion(Seattleroadsproj + 'split', 'OBJECTID_1', sroadsras, cell_assignment='MAXIMUM_COMBINED_LENGTH',
-                                  priority_field= 'SURFACEWID', cellsize = NED19proj)
-ZonalStatisticsAsTable(sroadsras, 'Value', NED19proj, out_table = srangetab19,
-                       statistics_type= 'RANGE', ignore_nodata='NODATA')
-ZonalStatisticsAsTable(sroadsras, 'Value', NED19smooth, out_table = srangetab19 + '_smooth',
-                       statistics_type= 'RANGE', ignore_nodata='NODATA')
-
-arcpy.PolylineToRaster_conversion(Seattleroadsproj + 'split', 'OBJECTID_1', sroadsras, cell_assignment='MAXIMUM_COMBINED_LENGTH',
-                                  priority_field= 'SURFACEWID', cellsize = NED13proj)
-ZonalStatisticsAsTable(sroadsras, 'Value', NED13proj, out_table = srangetab13,
-                       statistics_type= 'RANGE', ignore_nodata='NODATA')
-ZonalStatisticsAsTable(sroadsras, 'Value', NED13smooth, out_table = srangetab13 + '_smooth',
-                       statistics_type= 'RANGE', ignore_nodata='NODATA')
-
-arcpy.MakeFeatureLayer_management(Seattleroadsproj + 'split', 'sroads_lyr')
-arcpy.AddJoin_management('sroads_lyr', 'OBJECTID', srangetab19, 'Value')
-arcpy.AddJoin_management('sroads_lyr', 'OBJECTID', srangetab13, 'Value')
-arcpy.AddJoin_management('sroads_lyr', 'OBJECTID', srangetab19 + '_smooth', 'Value')
-arcpy.AddJoin_management('sroads_lyr', 'OBJECTID', srangetab13 + '_smooth', 'Value')
-arcpy.CopyFeatures_management('sroads_lyr', Seattleroadsproj + 'split_elev') #Often stays stuck in Python
-
-
-
+#Constrain gradient values by functional class
 
 
 # #Join all data to road vector
@@ -597,52 +677,12 @@ for tab in NTMurls:
         pass
 
 #Download shapes as opendata website doesn't work
-baseURL = "https://geo.dot.gov/server/rest/services/NTAD/GTFS_NTM/MapServer/1/query"
-arcpy.env.workspace = NTMdir
 basename='NTM_shapes'
-itersize=1000
-IDrange = range(0,100000, itersize)
-for i, j in itertools.izip(IDrange, IDrange[1:]):
-    itertry = itersize
-    downlist = []
-    # It seems like REST API server also has a limitation on the size of the downloads so sometimes won't allow
-    # Therefore, if fails to download, try smaller increments until reaches increments of 2 if still fails at increments
-    # of 2, then throw a proper error and break
-    while True:
-        try:
-            IDrangetry = list(
-                sorted(set(range(i, j + 1, itertry) + [j])))  # To make sure that the list goes until the maximum
-            # Loop with smaller increment within range
-            for k, l in itertools.izip(IDrangetry, IDrangetry[1:]):
-                print('From {0} to {1}'.format(k, l))
-                where = "OBJECTID>={0} AND OBJECTID<{1}".format(k, l)
-                # &geometryType=esriGeometryPoint
-                query = "?where={}&returnGeometry=true&f=json&outFields=*".format(where)
-                fsURL = baseURL + query
-                fs = arcpy.FeatureSet()
-                fs.load(fsURL)
-                if long(arcpy.GetCount_management(fs)[0]) > 0:
-                    outname = '{0}_{1}_{2}'.format(basename, k, l)
-                    downlist.append(outname)
-                    arcpy.CopyFeatures_management(fs, outname)
-                    print(outname)
-                else:
-                    print('No data from OBJECTID {0} to OBJECTID {1}'.format(k, l))
-            break
-        except:
-            if itertry > 5:
-                print('Count not download, delete previous {0} datasets, try downloading in smaller increments'.format(
-                    len(downlist)))
-                if len(downlist) > 0:
-                    for fc in downlist:
-                        arcpy.Delete_management(fc)
-                    downlist = []
-                itertry = itertry / 2
-            else:
-                e = sys.exc_info()[1]
-                print('Exit with error: ' + e.args[0])
-                # sys.exit(1)
-                break
+APIdownload(baseURL="https://geo.dot.gov/server/rest/services/NTAD/GTFS_NTM/MapServer/1/query",
+            workspace = NTMdir,
+            basename = basename,
+            itersize = 1000,
+            IDlist = [0,1000000])
 arcpy.Merge_management(arcpy.ListFeatureClasses('{}_*'.format(basename)),output='{}'.format(basename))
 for fc in arcpy.ListFeatureClasses('{}_*'.format(basename)):
     arcpy.Delete_management(fc)
