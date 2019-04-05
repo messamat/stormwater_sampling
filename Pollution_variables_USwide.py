@@ -15,13 +15,16 @@ import numpy as np
 import traceback
 import us
 import itertools
-from SpatialJoinLines_LargestOverlap import *
-from GTFStoSHP import *
 import shutil
 import contextlib
 import ftplib
 import urlparse
 from collections import defaultdict
+
+from SpatialJoinLines_LargestOverlap import *
+from GTFStoSHP import *
+from explode_overlapping import *
+from heatmap_custom import *
 
 pd.options.display.max_columns = 20
 pd.options.display.max_rows = 200
@@ -39,6 +42,23 @@ AQIgdb = os.path.join(rootdir, 'results/airdata/AQI.gdb')
 NED19proj = os.path.join(rootdir, 'results/ned19_psproj')
 NED13proj = os.path.join(rootdir, 'results/ned13_psproj')
 
+XRFsites = os.path.join(rootdir, 'data/field_data/sampling_sites_edit_select.shp')
+
+NLCD_reclass = os.path.join(rootdir, 'results/LU.gdb/NLCD_reclass_final')
+NLCD_imp = os.path.join(rootdir, 'data/nlcd_2011_impervious_2011_edition_2014_10_10/nlcd_2011_impervious_2011_edition_2014_10_10.img') #Zipped
+UTM10 = arcpy.SpatialReference(26910)
+
+template_ras = os.path.join(rootdir,'results/bing/181204_02_00_class_mlc.tif')
+res = arcpy.GetRasterProperties_management(template_ras, 'CELLSIZEX')
+pollutgdb = os.path.join(rootdir,'results/pollution_variables.gdb')
+if arcpy.Exists(pollutgdb):
+    print('Geodatabase already exists')
+else:
+    arcpy.CreateFileGDB_management(os.path.join(rootdir,'results'), 'pollution_variables.gdb')
+
+#usa contiguous albers equal area conic - esri projection 102003
+#Spatial reference: http://spatialreference.org/ref/esri/usa-contiguous-albers-equal-area-conic/
+albers = arcpy.SpatialReference(102003) #"+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"
 
 #Output variables
 usdotgdb = os.path.join(resdir, 'usdot.gdb')
@@ -60,15 +80,44 @@ tigerroads_format = tigerroads_UA + 'states'
 states = os.path.join(tiger16dir, 'tl_2016_us_state/tl_2016_us_state.shp')
 hpmstiger = os.path.join(usdotgdb, 'hpmstiger')
 
-hpms_sub = os.path.join(usdotgdb, 'hpms_subset')
-hpms_dens = os.path.join(usdotgdb, 'hpms_dens')
-hpms_split = os.path.join(usdotgdb, 'hpms_split')
+hpms_sub = os.path.join(usdotgdb, 'hpmstiger_subset')
+hpms_ras19 = os.path.join(usdotgdb, 'hpmstiger_subsetras19')
+hpms_ras13 = os.path.join(usdotgdb, 'hpmstiger_subsetras13')
+siteshull = os.path.join(rootdir, 'results/XRFsites_convexhull.shp')
+
+NLCD_reclass_PS = os.path.join(rootdir, 'results/NLCD_reclass_final_PS.tif')
+NLCD_imp_PS = os.path.join(rootdir, 'results/nlcd_imp_ps')
+
+NTMroutes = os.path.join(rootdir, 'results/NTM.gdb/NTM_routes')
+NTMsel = os.path.join(rootdir, 'results/NTM.gdb/NTM_routes_sel')
+NTMproj = os.path.join(rootdir, 'results/NTM.gdb/NTM_routes_selproj')
+NTMsplitdiss = NTMproj + '_splitv_diss'
+NTMras = os.path.join(rootdir, 'results/transit.gdb/NTMras')
 
 if not arcpy.Exists(usdotgdb):
     arcpy.CreateFileGDB_management(resdir, out_name = 'usdot')
 
 #Function to download and unzip miscellaneous types of files
 #Partly inspired from https://www.codementor.io/aviaryan/downloading-files-from-urls-in-python-77q3bs0un
+def getfilelist(dir, repattern):
+    return [os.path.join(dirpath, file)
+            for (dirpath, dirnames, filenames) in os.walk(dir)
+            for file in filenames if re.search(repattern, file)]
+
+def mergedel(dir, repattern, outfile, verbose=False):
+    flist = getfilelist(dir, repattern)
+    pd.concat([pd.read_csv(file, index_col=[0], parse_dates=[0])
+               for file in flist],
+              axis=0) \
+        .sort_index() \
+        .to_csv(outfile)
+    print('Merged and written to {}'.format(outfile))
+
+    for tab in flist:
+        os.remove(tab)
+        if verbose == True:
+            print('Delete {}'.format(tab))
+
 def is_downloadable(url):
     """
     Does the url contain a downloadable resource
@@ -163,10 +212,11 @@ def dlfile(url, outpath, outfile=None, fieldnames=None):
     #Unzip downloaded file
     unzip(out)
 
-def APIdownload(baseURL, workspace, basename, itersize, IDlist):
+def APIdownload(baseURL, workspace, basename, itersize, IDlist, geometry):
     IDrange = range(IDlist[0], IDlist[1], itersize)
+    arcpy.env.workspace = workspace
+
     for i, j in itertools.izip(IDrange, IDrange[1:]):
-        arcpy.env.workspace = workspace
         itertry = itersize
         downlist = []
         # It seems like REST API server also has a limitation on the size of the downloads so sometimes won't allow
@@ -181,14 +231,22 @@ def APIdownload(baseURL, workspace, basename, itersize, IDlist):
                     print('From {0} to {1}'.format(k, l))
                     where = "OBJECTID>={0} AND OBJECTID<{1}".format(k, l)
                     # &geometryType=esriGeometryPoint
-                    query = "?where={}&returnGeometry=true&f=json&outFields=*".format(where)
+                    query = "?where={0}&returnGeometry={1}&f=json&outFields=*".format(where, str(geometry).lower())
                     fsURL = baseURL + query
-                    fs = arcpy.FeatureSet()
+                    if geometry == True:
+                        fs = arcpy.FeatureSet()
+                    elif geometry == False:
+                        fs = arcpy.RecordSet()
+                    else:
+                        raise ValueError('Invalid geometry argument: only boolean values are accepted')
                     fs.load(fsURL)
                     if long(arcpy.GetCount_management(fs)[0]) > 0:
                         outname = '{0}_{1}_{2}'.format(basename, k, l)
                         downlist.append(outname)
-                        arcpy.CopyFeatures_management(fs, outname)
+                        if geometry == True:
+                            arcpy.CopyFeatures_management(fs, outname)
+                        else:
+                            arcpy.CopyRows_management(fs, '{}.csv'.format(outname))
                         print(outname)
                     else:
                         print('No data from OBJECTID {0} to OBJECTID {1}'.format(k, l))
@@ -366,7 +424,9 @@ USAADTformat = USAADTmelt.join(pd.DataFrame.from_dict(f_ref, 'index'))\
     .rename(columns={0:'F_SYSTEM'})
 USAADTformat['AADT'] = USAADTformat['AADT'].astype(int)
 USAADTformat['state_code'] = USAADTformat['state_code'].astype(int)
-#Download USHPMS data
+USAADTformat.to_csv(os.path.join(resdir, 'checkAADT.csv'))
+
+#Download USHPMS data (https://www.bts.gov/geography/geospatial-portal/NTAD-direct-download)
 if not arcpy.Exists(hpms):
     dlfile(url="http://www.bts.gov/sites/bts.dot.gov/files/ntad/HPMS2016.gdb.zip",
            outpath=USDOTdir)
@@ -412,7 +472,7 @@ if not arcpy.Exists(fsystemtab):
 fsystemstats = pd.DataFrame(arcpy.da.TableToNumPyArray(fsystemtab, field_names=('state_code','f_system','frequency')))
 fsystemstats['proportion'] = fsystemstats['frequency']/\
                              fsystemstats['frequency'].groupby(fsystemstats['state_code']).transform('sum')
-missingstatefips = list(fsystemstats[(fsystemstats['f_system']==7) & (fsystemstats['proportion']<0.1)]['state_code'])
+missingstatefips = list(fsystemstats[(fsystemstats['f_system']==7) & (fsystemstats['proportion']<0.05)]['state_code'])
 
 #Download list of all FIPS codes in the US (see https://www.census.gov/geo/reference/codes/cou.html for metadata)
 dlfile(url = 'https://www2.census.gov/geo/docs/reference/codes/files/national_county.txt', outpath = tiger16dir,
@@ -444,7 +504,7 @@ tigerlist = [os.path.join(dirpath, file)
               for file in filenames if re.search('tl_2016_[0-9]{5}_roads.shp$', file)]
 arcpy.Merge_management(tigerlist, tigerroads)
 
-#Subselect to only keep MTFCC IN ('S1400','S1640) https://www2.census.gov/geo/pdfs/reference/mtfccs2018.pdf
+#Subselect to only keep local roads — MTFCC IN ('S1400','S1640) https://www2.census.gov/geo/pdfs/reference/mtfccs2018.pdf
 arcpy.MakeFeatureLayer_management(tigerroads, 'tigerroads_lyr', where_clause = "MTFCC IN ('S1400','S1640')")
 arcpy.GetCount_management('tigerroads_lyr')
 arcpy.CopyFeatures_management('tigerroads_lyr', tigerroads_sub)
@@ -541,7 +601,6 @@ spdlstats_filled.loc[spdsub, 'speed_limitmedian'] = spdlstats_filled.loc[spdsub,
 spdlstats_filled.loc[spdlstats['f_system']==0, 'speed_limitmedian'].replace(
     spdlstats_filled.loc[spdlstats_filled['f_system']==1, 'speed_limitmedian'])
 
-####################################RUN once hpmstiger is ready
 #Compute spdl_filled for hpms
 if 'spdl_filled' not in [f.name for f in arcpy.ListFields(hpmstiger)]:
     arcpy.AddField_management(hpmstiger, field_name = 'spdl_filled', field_type='SHORT')
@@ -551,197 +610,229 @@ else:
 with arcpy.da.UpdateCursor(hpmstiger, ['speed_limit', 'spdl_filled', 'OBJECTID', 'urban_code', 'UATYP10',
                                        'state_code', 'f_system']) as cursor:
     for row in cursor:
-        if row[0] != 0: #If already speed limit data
+        if row[0] > 0: #If already speed limit data
             row[1] = row[0] #Use that value for spdl_filled
         else: #If no speed limit data
             print(row[2])
-            if row[3] not in ['0', '99999'] and row[4] in ['U', 'C']: #If urban
-                row[1] = spdlstats_filled[(spdlstats_filled['urban'] == 'urban') &
+            if row[3] not in [None, '0', '99999'] or row[4] in ['U', 'C']: #If urban
+                row[1] = spdlstats_filled.loc[(spdlstats_filled['urban'] == 'urban') &
                                           (spdlstats_filled['state_code'] == row[5]) &
-                                          (spdlstats_filled['f_system'] == row[6]), 'speed_limitmedian'][0]
+                                          (spdlstats_filled['f_system'] == row[6]), 'speed_limitmedian'].values[0]
             else: #if rural
-                row[1] = spdlstats_filled[(spdlstats_filled['urban'] == 'rural') &
+                row[1] = spdlstats_filled.loc[(spdlstats_filled['urban'] == 'rural') &
                                           (spdlstats_filled['state_code'] == row[5]) &
-                                          (spdlstats_filled['f_system'] == row[6]), 'speed_limitmedian'][0]
+                                          (spdlstats_filled['f_system'] == row[6]), 'speed_limitmedian'].values[0]
         cursor.updateRow(row)
+
+########################################################################################################################
+# PREPARE TRANSIT DATA TO CREATE HEATMAP BASED ON BUS ROUTES
+# Note: The National Transit Map has many glitches and is not a comprehensive datasets. Many shapes do not have
+# corresponding records in the 'trips' table (linked through AgencyName and shape_id) because either shape_id is null,
+# missing altogether, or in the wrong format (e.g. 200062.0 -- formatted as a numeric -- rather than 0200062) leading to
+# failures in the joining process. The number of issues is so high that we did not attempt to fix it. This concerns
+#  ~3780/63000 records
+########################################################################################################################
+#Download tables and shapefile directly from API
+basename='NTM_shapes'
+if not arcpy.Exists(os.path.join(NTMdir, '{}.shp'.format(basename))):
+    APIdownload(baseURL="https://geo.dot.gov/server/rest/services/NTAD/GTFS_NTM/MapServer/1/query",
+                workspace = NTMdir,
+                basename = basename,
+                itersize = 1000,
+                IDlist = [0,1000000],
+                geometry=True)
+    arcpy.Merge_management(arcpy.ListFeatureClasses('{}_*'.format(basename)),output='{}'.format(basename))
+    for fc in arcpy.ListFeatureClasses('{}_*'.format(basename)):
+        arcpy.Delete_management(fc)
+        print('Deleted {}...'.format(fc))
+
+#Calendar dates
+outcaldates = os.path.join(NTMdir, 'NTMAPI_calendar_dates.csv')
+if not arcpy.Exists(outcaldates):
+    APIdownload(baseURL="https://geo.dot.gov/server/rest/services/NTAD/GTFS_NTM/MapServer/2/query",
+                workspace = NTMdir, basename = 'NTM_calendar_dates', itersize = 1000, IDlist = [0,100000], geometry=False)
+    mergedel(NTMdir, 'NTM_calendar_dates_[0-9]+_[0-9]+[.]csv$', outcaldates, verbose=True)
+#Trips
+outtrips = os.path.join(NTMdir, 'NTMAPI_trips.csv')
+if not arcpy.Exists(outtrips):
+    APIdownload(baseURL="https://geo.dot.gov/server/rest/services/NTAD/GTFS_NTM/MapServer/7/query",
+                workspace = NTMdir, basename = 'NTM_trips', itersize = 1000, IDlist = [0,1700000], geometry=False)
+    mergedel(NTMdir, 'NTM_trips_[0-9]+_[0-9]+[.]csv$', os.path.join(NTMdir, 'NTMAPI_trips.csv'), verbose=True)
+#Calendar
+outcalendar = os.path.join(NTMdir, 'NTMAPI_calendar.csv')
+if not arcpy.Exists(outcalendar):
+    APIdownload(baseURL="https://geo.dot.gov/server/rest/services/NTAD/GTFS_NTM/MapServer/9/query",
+                workspace = NTMdir, basename = 'NTM_calendar', itersize = 500, IDlist = [0,10000], geometry=False)
+    mergedel(NTMdir, 'NTM_calendar_[0-9]+_[0-9]+[.]csv$', outcalendar, verbose=True)
+#Routes
+outroutes = os.path.join(NTMdir, 'NTMAPI_routes.csv')
+if not arcpy.Exists(outroutes):
+    APIdownload(baseURL="https://geo.dot.gov/server/rest/services/NTAD/GTFS_NTM/MapServer/11/query",
+                workspace = NTMdir, basename = 'NTM_routes', itersize = 1000, IDlist = [0,15000], geometry=False)
+    mergedel(NTMdir, 'NTM_routes_[0-9]+_[0-9]+[.]csv$', outroutes, verbose=True)
+
+#Format data
+GTFStoSHPweeklynumber(gtfs_dir= NTMdir, out_gdb=os.path.join(rootdir, 'results/NTM.gdb'), out_fc = 'NTM',
+                      current=False, keep = True)
+
+#Identify routes for which the shape does not correspond to the actual trajectory but just stops
+arcpy.AddField_management(NTMroutes, 'vrtx_count', 'LONG')
+arcpy.AddField_management(NTMroutes, 'vrtxlength_ratio', 'FLOAT')
+fc = int(arcpy.GetCount_management(NTMroutes).getOutput(0))
+with arcpy.da.UpdateCursor(NTMroutes, ['SHAPE@', 'vrtx_count', 'SHAPE@LENGTH', 'vrtxlength_ratio']) as cursor:
+    x=0
+    for row in cursor:
+        if x%100 == 0:
+            print('{}% of records processed'.format(100*x/fc))
+        vcount = 0
+        if row[0]: #Make sure that shape is valid (some 'None' shapes sometimes)
+            for part in row[0]: #Iterate through parts for multipart features
+                for pnt in part: #Iterate through part's points
+                    if pnt:
+                        vcount += 1
+            row[1] = vcount
+            row[3] = vcount/row[2] #vrtexlength_ratio = vertex count/shape_length
+
+            cursor.updateRow(row)
+        x += 1
+
+#Only keep overground transports (although some subways might have some overground sections)
+routeSQL = "(route_type IN ('0','2','3','5')) AND" \
+           "(service_len_MIN > 30) AND" \
+           "(adjustnum_SUM > 0) AND" \
+           "(((NOT AgencyName = 'NJTRANSITBUS_20080_277_1046') AND (vrtxlength_ratio > 0.0003)) OR" \
+           " ((AgencyName = 'NJTRANSITBUS_20080_277_1046') AND (vrtxlength_ratio > 0.001)))"
+arcpy.MakeFeatureLayer_management(NTMroutes, 'routes_lyr', where_clause= routeSQL)
+arcpy.CopyFeatures_management('routes_lyr', NTMsel)
+albers = "+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"
+NTMproj = os.path.join(rootdir, 'results/NTM.gdb/NTM_routes_selproj')
+arcpy.Project_management(in_dataset=NTMsel, out_dataset=NTMproj, out_coor_system=albers)
+
+#Create raster of weekly number of buses at the same resolution as bing data
+# Convert weekly number of buses to integer
+arcpy.AddField_management(NTMproj, 'adjustnum_int', 'SHORT')
+with arcpy.da.UpdateCursor(NTMproj, ['adjustnum_SUM', 'adjustnum_int']) as cursor:
+    for row in cursor:
+        if row[0]:
+            row[1] = int(10*row[0]+0.5)
+            cursor.updateRow(row)
+
+#Split lines at all intersections so that small identical overlapping segments can be dissolved
+arcpy.SplitLine_management(NTMproj, NTMproj + '_split') #Split at intersection
+##########RUN###########
+arcpy.FindIdentical_management(NTMproj + '_split', "explFindID", "Shape") #Find overlapping segments and make them part of a group (FEAT_SEQ)
+arcpy.MakeFeatureLayer_management(NTMproj + '_split', "intlyr")
+arcpy.AddJoin_management("intlyr", arcpy.Describe("intlyr").OIDfieldName, "explFindID", "IN_FID", "KEEP_ALL")
+arcpy.Dissolve_management("intlyr", NTMsplitdiss, dissolve_field='explFindID.FEAT_SEQ',
+                          statistics_fields=[[os.path.split(NTMproj)[1] + '_split.adjustnum_int', 'SUM']]) #Dissolve overlapping segments
+arcpy.RepairGeometry_management(NTMsplitdiss, delete_null = 'DELETE_NULL') #sometimes creates empty geom
+#Get the length of a half pixel diagonal to create buffers for
+#guaranteeing that segments potentially falling within the same pixel are rasterized separately
+tolerance = (2.0**0.5)*float(res.getOutput(0))/2
+from explode_overlapping import *
+ExplodeOverlappingLines(NTMsplitdiss, tolerance)
+
+#For each set of non-overlapping lines, create its own raster
+tilef = 'expl'
+tilelist = list(set([row[0] for row in arcpy.da.SearchCursor(NTMsplitdiss, [tilef])]))
+outras_base = os.path.join(rootdir, 'results/NTM.gdb/transitnum_')
+arcpy.env.snapRaster = template_ras
+for tile in tilelist:
+    outras = outras_base + str(tile)
+    if not arcpy.Exists(outras):
+        selexpr = '{0} = {1}'.format(tilef, tile)
+        print(selexpr)
+        arcpy.MakeFeatureLayer_management(NTMsplitdiss, 'transit_lyr', where_clause= selexpr)
+        arcpy.PolylineToRaster_conversion('transit_lyr', value_field='adjustnum_int', out_rasterdataset=outras, cellsize=res)
+
+#Mosaic to new raster
+arcpy.env.workspace = os.path.split(outras_base)[0]
+transitras_tiles = arcpy.ListRasters('transitnum_*')
+NTMras = os.path.join(rootdir, 'results/transit.gdb/NTMras')
+arcpy.MosaicToNewRaster_management(transitras_tiles, os.path.split(NTMras)[0], os.path.split(NTMras)[1],
+                                   pixel_type='32_BIT_UNSIGNED', number_of_bands= 1, mosaic_method = 'SUM')
+for tile in transitras_tiles:
+    print('Deleting {}...'.format(tile))
+    arcpy.Delete_management(tile)
+arcpy.ClearEnvironment('Workspace')
 
 ########################################################################################################################
 # PREPARE DATA ON ROAD GRADIENTS
 ########################################################################################################################
-#Select subset of hpms to
+#Subset road dataset based on convex hull around sites
+arcpy.Buffer_analysis(XRFsites, os.path.join(rootdir, 'results/XRFsites_3kmbuf.shp'),
+                      buffer_distance_or_field='3000 meters', method='GEODESIC')
+arcpy.MinimumBoundingGeometry_management(os.path.join(rootdir, 'results/XRFsites_3kmbuf.shp'),
+                                         siteshull, geometry_type='CONVEX_HULL', group_option='ALL')
+arcpy.Clip_analysis(hpmstiger, siteshull, hpms_sub)
 
-arcpy.CopyFeatures_management(hpms, hpms_dens)
-#Densify roads
-arcpy.Describe(hpms_sub).SpatialReference.linearUnitName #Check that crs is in meters
-arcpy.Densify_edit(hpms_sub, densification_method='DISTANCE', distance='10', max_deviation='1.5')
-#Split at vertices
-arcpy.SplitLine_management(hpms_sub,hpms_split)
-
-#Run on  NED 19 max-min for split line
-arcpy.PolylineToRaster_conversion(hpms_split, 'OBJECTID', hpms_sub + '19', cell_assignment='MAXIMUM_COMBINED_LENGTH',
+#Compute statistics
+[f.name for f in arcpy.ListFields(hpms_sub)]
+arcpy.PolylineToRaster_conversion(hpms_sub, 'OBJECTID', hpms_ras19, cell_assignment='MAXIMUM_COMBINED_LENGTH',
                                   priority_field= 'aadt_filled', cellsize = NED19proj)
-ZonalStatisticsAsTable(hpms_sub + '19', 'Value', NED19proj, out_table = rangetab19, statistics_type= 'RANGE', ignore_nodata='NODATA')
-
-#Run on smoothed NED 19 max-min for split line
-rectngh = NbrRectangle(3, 3, 'CELL')
-ned19_smooth = FocalStatistics(NED19proj, neighborhood=rectngh, statistics_type='MEAN', ignore_nodata='DATA')
-ned19_smooth.save(NED19smooth)
-ZonalStatisticsAsTable(hpms_sub + '19', 'Value', NED19smooth, out_table = rangetab19_smooth,
+ZonalStatisticsAsTable(hpms_ras19, 'Value', NED19smooth, out_table = rangetab19 + '_smooth',
                        statistics_type= 'RANGE', ignore_nodata='NODATA')
 
-#Run on  NED 13 max-min for split line
-arcpy.PolylineToRaster_conversion(hpms_split, 'OBJECTID', hpms_sub + '13', cell_assignment='MAXIMUM_COMBINED_LENGTH',
+arcpy.PolylineToRaster_conversion(hpms_sub, 'OBJECTID', hpms_ras13, cell_assignment='MAXIMUM_COMBINED_LENGTH',
                                   priority_field= 'aadt_filled', cellsize = NED13proj)
-ZonalStatisticsAsTable(hpms_sub + '13', 'Value', NED13proj, out_table = rangetab13, statistics_type= 'RANGE', ignore_nodata='NODATA')
-
-#Run on smoothed NED 13 max-min for split line
-rectngh = NbrRectangle(3, 3, 'CELL')
-ned13_smooth = FocalStatistics(NED13proj, neighborhood=rectngh, statistics_type='MEAN', ignore_nodata='DATA')
-ned13_smooth.save(NED13smooth)
-ZonalStatisticsAsTable(hpms_sub + '13', 'Value', NED13smooth, out_table = rangetab13_smooth,
+ZonalStatisticsAsTable(hpms_ras13, 'Value', NED13smooth, out_table = rangetab13 + '_smooth',
                        statistics_type= 'RANGE', ignore_nodata='NODATA')
 
-#Rejoin to split lines to get length
-arcpy.MakeFeatureLayer_management(hpms_split, 'hpmssub_lyr')
-arcpy.AddJoin_management('hpmssub_lyr', 'OBJECTID', rangetab19, 'Value')
-arcpy.AddJoin_management('hpmssub_lyr', 'OBJECTID', rangetab13, 'Value')
-arcpy.AddJoin_management('hpmssub_lyr', 'OBJECTID', rangetab19_smooth, 'Value')
-arcpy.AddJoin_management('hpmssub_lyr', 'OBJECTID', rangetab13_smooth, 'Value')
-arcpy.CopyFeatures_management('hpmssub_lyr', hpms_split + 'elv') #Often stays stuck in Python
+#Get all range values for zonal statistics tables
+tablist =  [rangetab19 + '_smooth', rangetab13 + '_smooth']
+elvdic = defaultdict(lambda: [-99.0] * len(tablist))
+for i in range(0, len(tablist)):
+    print(tablist[i])
+    for row in arcpy.da.SearchCursor(tablist[i], ['Value', 'RANGE']):
+        elvdic[row[0]][i] = row[1]
 
 #Compute slope
+arcpy.AddField_management(hpms_sub, 'gradient', 'FLOAT')
 
-#Rejoin to main
-
-#Average by streetID
-
-#Constrain gradient values by functional class
-
-
-# #Join all data to road vector
-# arcpy.MakeFeatureLayer_management(PSOSM_allproj, 'osmroads')
-# arcpy.AddJoin_management('osmroads', 'osm_id', rangetab19, 'osm_id')
-# arcpy.AddJoin_management('osmroads', 'osm_id', rangetab13, 'osm_id')
-# arcpy.AddJoin_management('osmroads', 'osm_id', rangetab19_smooth, 'osm_id')
-# arcpy.AddJoin_management('osmroads', 'osm_id', rangetab13_smooth, 'osm_id')
-# arcpy.CopyFeatures_management('osmroads', PSOSM_elv) #Often stays stuck in Python
-#
-# arcpy.AlterField_management(PSOSM_elv, 'RANGE', 'RANGE19', 'RANGE19')
-# arcpy.AlterField_management(PSOSM_elv, 'RANGE_1', 'RANGE13', 'RANGE13')
-# arcpy.AlterField_management(PSOSM_elv, 'RANGE_12', 'RANGE19smooth', 'RANGE19smooth')
-# arcpy.AlterField_management(PSOSM_elv, 'RANGE_12_13', 'RANGE13smooth', 'RANGE13smooth')
-#
-# arcpy.AddField_management(PSOSM_elv, 'gradient19', 'FLOAT')
-# arcpy.AddField_management(PSOSM_elv, 'gradient13', 'FLOAT')
-# arcpy.AddField_management(PSOSM_elv, 'gradient19_smooth', 'FLOAT')
-# arcpy.AddField_management(PSOSM_elv, 'gradient13_smooth', 'FLOAT')
-# arcpy.CalculateField_management(PSOSM_elv, 'gradient19', '!RANGE19!/!Shape_Length!', 'PYTHON')
-# arcpy.CalculateField_management(PSOSM_elv, 'gradient13', '!RANGE13!/!Shape_Length!', 'PYTHON')
-# arcpy.CalculateField_management(PSOSM_elv, 'gradient19_smooth', '!RANGE19smooth!/!Shape_Length!', 'PYTHON')
-# arcpy.CalculateField_management(PSOSM_elv, 'gradient13_smooth', '!RANGE13smooth!/!Shape_Length!', 'PYTHON')
-#
-# # Fill in and adjust values for those roads outside of NED 1/9 extent
-# arcpy.AddField_management(PSOSM_elv, 'gradient_composite', 'FLOAT')
-# with arcpy.da.UpdateCursor(PSOSM_elv, ['gradient_composite','gradient19_smooth', 'gradient13_smooth']) as cursor:
-#     for row in cursor:
-#         if row[1] is not None:
-#             row[0] = min(row[1], 0.5)
-#         elif row[2] is not None:
-#             row[0] = min(row[2], 0.5)
-#         else:
-#             pass
-#         cursor.updateRow(row)
-
-########################################################################################################################
-# PREPARE TRANSIT DATA TO CREATE HEATMAP BASED ON BUS ROUTES
-########################################################################################################################
-#Donwload National Transit Map data (from http://osav-usdot.opendata.arcgis.com/, type NTM)
-NTMurls = {'trips': "http://osav-usdot.opendata.arcgis.com/datasets/816b89974fad4fcf9c7356a3b704ffd1_7.csv",
-           'locations':"http://osav-usdot.opendata.arcgis.com/datasets/816b89974fad4fcf9c7356a3b704ffd1_11.csv",
-           'shapes': "http://osav-usdot.opendata.arcgis.com/datasets/816b89974fad4fcf9c7356a3b704ffd1_1.csv",
-           'agency': "http://osav-usdot.opendata.arcgis.com/datasets/816b89974fad4fcf9c7356a3b704ffd1_6.csv",
-           'transfers': "http://osav-usdot.opendata.arcgis.com/datasets/816b89974fad4fcf9c7356a3b704ffd1_3.csv",
-           'stops': "http://osav-usdot.opendata.arcgis.com/datasets/816b89974fad4fcf9c7356a3b704ffd1_0.csv",
-           'calendar': "http://osav-usdot.opendata.arcgis.com/datasets/816b89974fad4fcf9c7356a3b704ffd1_9.csv",
-           'frequencies': "http://osav-usdot.opendata.arcgis.com/datasets/816b89974fad4fcf9c7356a3b704ffd1_8.csv",
-           'calendar dates': "http://osav-usdot.opendata.arcgis.com/datasets/816b89974fad4fcf9c7356a3b704ffd1_2.csv",
-           'fare rules': "http://osav-usdot.opendata.arcgis.com/datasets/816b89974fad4fcf9c7356a3b704ffd1_10.csv",
-           'feed info': "http://osav-usdot.opendata.arcgis.com/datasets/816b89974fad4fcf9c7356a3b704ffd1_5.csv",
-           'routes': "http://osav-usdot.opendata.arcgis.com/datasets/816b89974fad4fcf9c7356a3b704ffd1_11.csv"}
-for tab in NTMurls:
-    print(tab)
-    try:
-        dlfile(url = NTMurls[tab], outpath = NTMdir)
-    except Exception as e:
-        print e
-        pass
-
-#Download shapes as opendata website doesn't work
-basename='NTM_shapes'
-APIdownload(baseURL="https://geo.dot.gov/server/rest/services/NTAD/GTFS_NTM/MapServer/1/query",
-            workspace = NTMdir,
-            basename = basename,
-            itersize = 1000,
-            IDlist = [0,1000000])
-arcpy.Merge_management(arcpy.ListFeatureClasses('{}_*'.format(basename)),output='{}'.format(basename))
-for fc in arcpy.ListFeatureClasses('{}_*'.format(basename)):
-    arcpy.Delete_management(fc)
-    print('Deleted {}...'.format(fc))
-
-#Format data
-GTFStoSHPweeklynumber(gtfs_dir= NTMdir, out_gdb=os.path.join(rootdir, 'results/NTM.gdb'), out_fc = 'NTM',
-                      keep = True)
-
-# #Only keep transports overground (although some subways might have some overground sections)
-# arcpy.MakeFeatureLayer_management(PStransit, 'PStransit_lyr',
-#                                   where_clause= '(route_type = 3) AND (MIN_service_len > 1) AND (SUM_adjustnum > 0)')
-# arcpy.CopyFeatures_management('PStransit_lyr', PStransitbus)
-# arcpy.Project_management(PStransitbus, PStransitbus_proj, UTM10)
-#
-# #Create raster of weekly number of buses at the same resolution as bing data
-# # Convert weekly number of buses to integer
-# arcpy.AddField_management(PStransitbus_proj, 'adjustnum_int', 'SHORT')
-# arcpy.CalculateField_management(PStransitbus_proj, 'adjustnum_int',
-#                                 expression='int(10*!SUM_adjustnum!+0.5)', expression_type='PYTHON')
-#
-# #Split lines at all intersections so that small identical overlapping segments can be dissolved
-# arcpy.SplitLine_management(PStransitbus_proj, PStransitbus_proj + '_split') #Split at intersection
-# arcpy.FindIdentical_management(PStransitbus_proj + '_split', "explFindID", "Shape") #Find overlapping segments and make them part of a group (FEAT_SEQ)
-# arcpy.MakeFeatureLayer_management(PStransitbus_proj + '_split', "intlyr")
-# arcpy.AddJoin_management("intlyr", arcpy.Describe("intlyr").OIDfieldName, "explFindID", "IN_FID", "KEEP_ALL")
-# arcpy.Dissolve_management("intlyr", PStransitbus_splitdiss, dissolve_field='explFindID.FEAT_SEQ',
-#                           statistics_fields=[[os.path.split(PStransitbus_proj)[1] + '_split.adjustnum_int', 'SUM']]) #Dissolve overlapping segments
-# arcpy.RepairGeometry_management(PStransitbus_splitdiss, delete_null = 'DELETE_NULL') #sometimes creates empty geom
-# #Get the length of a half pixel diagonal to create buffers for
-# #guaranteeing that segments potentially falling within the same pixel are rasterized separately
-# tolerance = (2.0**0.5)*float(res.getOutput(0))/2
-# ExplodeOverlappingLines(PStransitbus_splitdiss, tolerance)
-#
-# #For each set of non-overlapping lines, create its own raster
-# tilef = 'expl'
-# tilelist = list(set([row[0] for row in arcpy.da.SearchCursor(PStransitbus_splitdiss, [tilef])]))
-# outras_base = os.path.join(rootdir, 'results/transit.gdb/busnum_')
-# arcpy.env.snapRaster = template_ras
-# for tile in tilelist:
-#     outras = outras_base + str(tile)
-#     if not arcpy.Exists(outras):
-#         selexpr = '{0} = {1}'.format(tilef, tile)
-#         print(selexpr)
-#         arcpy.MakeFeatureLayer_management(PStransitbus_splitdiss, 'bus_lyr', where_clause= selexpr)
-#         arcpy.PolylineToRaster_conversion('bus_lyr', value_field='adjustnum_int', out_rasterdataset=outras, cellsize=res)
-#
-# #Mosaic to new raster
-# arcpy.env.workspace = os.path.split(outras_base)[0]
-# transitras_tiles = arcpy.ListRasters('busnum_*')
-# arcpy.MosaicToNewRaster_management(transitras_tiles, arcpy.env.workspace, os.path.split(PStransitras)[1],
-#                                    pixel_type='32_BIT_UNSIGNED', number_of_bands= 1, mosaic_method = 'SUM')
-# for tile in transitras_tiles:
-#     print('Deleting {}...'.format(tile))
-#     arcpy.Delete_management(tile)
-# arcpy.ClearEnvironment('Workspace')
-
+#Assign composite value to road dataset
+missinglist = []
+with arcpy.da.UpdateCursor(hpms_sub, ['OBJECTID', 'Shape_Length', 'gradient']) as cursor:
+    for row in cursor:
+        if elvdic[row[0]][0] != -99.0:
+            row[2] = elvdic[row[0]][0]/row[1] # gradient19_smooth = RANGE_19smooth/Shape_Length
+            cursor.updateRow(row)
+        elif elvdic[row[0]][1] != -99.0:
+            row[2] = elvdic[row[0]][1]/row[1] # gradient13_smooth = RANGE_13smooth/Shape_Length
+            cursor.updateRow(row)
+        else:
+            print('There are no data for OBJECTID {}'.format(row[0]))
+            row[2] = 0
+            missinglist.append(row[0])
+        cursor.updateRow(row)
+if len(missinglist)>0:
+    print('{} roads did not have any elevation range value'.format(len(missinglist)))
 
 ########################################################################################################################
 # PREPARE LAND USE DATA
 ########################################################################################################################
+#Export NLCD data to Puget Sound scale
+arcpy.env.extent = siteshull
+arcpy.ProjectRaster_management(NLCD_reclass, NLCD_reclass_PS, UTM10, resampling_type='NEAREST')
+#Export NLCD impervious data
+arcpy.ProjectRaster_management(NLCD_imp, NLCD_imp_PS, UTM10, resampling_type='BILINEAR')
+#Compute focal stats
+imp_mean = arcpy.sa.FocalStatistics(NLCD_imp_PS, neighborhood = NbrCircle(3, "CELL"), statistics_type= 'MEAN')
+imp_mean.save(NLCD_imp_PS + '_mean.tif')
 
+########################################################################################################################
+# CREATE HEATMAPS FOR SEATTLE AREA MODEL TRAINING (for all variables aside from Bing data)
+########################################################################################################################
+arcpy.env.workspace = pollutgdb
+#AADT
+arcpy.PolylineToRaster_conversion(hpms_sub, value_field='aadt_filled', out_rasterdataset='hpmssubAADT',
+                                  priority_field='AADT_filled', cellsize=res)
+customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=os.path.join(pollutgdb, 'hpmssubAADT'),
+              out_gdb=pollutgdb, out_var='subAADT', divnum=100, keyw='(pow|log)[1235]00(_[123])*', verbose=True)
+
+#Speed limit
+
+#Public transit
+
+#Road gradient
+
+#Bing
