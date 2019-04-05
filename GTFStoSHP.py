@@ -36,20 +36,17 @@ import traceback
 from collections import defaultdict
 from datetime import datetime
 
-arcpy.env.overwriteOutput=True
-arcpy.env.qualifiedFieldNames = False
-
 #--------------------------------------------------------------
 # FOR TROUBLESHOOTING
-rootdir = 'D:/Mathis/ICSL/stormwater/'
-gtfs_dir= os.path.join(rootdir, 'data/NTM_0319')
-out_gdb=os.path.join(rootdir, 'results/NTM.gdb')
-out_fc = 'NTM'
-keep = True
-outdir = gtfs_dir
-infile = os.path.join(gtfs_dir,'NTM_trips.csv')
-arcpy.env.workspace = out_gdb
-#shapesf = 'D:\Mathis\ICSL\stormwater\data\TransitWiki201812\shapes.txt'
+# rootdir = 'D:/Mathis/ICSL/stormwater/'
+# gtfs_dir= os.path.join(rootdir, 'data/NTM_0319')
+# out_gdb=os.path.join(rootdir, 'results/NTM.gdb')
+# out_fc = 'NTM'
+# keep = True
+# outdir = gtfs_dir
+# infile = os.path.join(gtfs_dir,'NTMAPI_trips.csv')
+# arcpy.env.workspace = out_gdb
+# shapesf = 'D:\Mathis\ICSL\stormwater\data\NTM0319/NTM_shapes.shp'
 #--------------------------------------------------------------
 
 def format_schema_import(infile, outdir):
@@ -121,6 +118,9 @@ def delete_intoutput(dir, ziplist, intlist) :
             pass
 
 def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
+    arcpy.env.overwriteOutput = True
+    arcpy.env.qualifiedFieldNames = False
+
     #Create gdb
     if not arcpy.Exists(out_gdb):
         print('Creating {}...'.format(out_gdb))
@@ -229,18 +229,31 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
             dates without specifying a normal weekly schedule. In most cases however, calendar_dates is used to define 
             exceptions to the default service categories defined in calendar file. 
             '''
-            calendat_datesf = filter(re.compile('.*calendar_dates[.](csv|txt)').search, gtfs_files)[0]
-            with open(calendat_datesf, 'r') as cal_txt:
+            calendar_datesf = filter(re.compile('.*calendar_dates[.](csv|txt)').search, gtfs_files)[0]
+            with open(calendar_datesf, 'r') as cal_txt:
                 dialect = csv.Sniffer().sniff(cal_txt.read())
                 cal_txt.seek(0)
                 cal_F = csv.DictReader(cal_txt, delimiter=dialect.delimiter)
                 #cal_headers = cal_F.fieldnames
 
-                # Create a dictionary to store number of dates for each exception_type: 1 service added, 2 service removed
-                cal_dic = defaultdict(lambda: [0] * 2)
+                # Create a dictionary to store number of dates for each exception_type (1 service added, 2 service removed) and dates
+                cal_dic = defaultdict(lambda: [0, 0, datetime.max, datetime.min])
+                #cal_dic record structure: {AgencyName._.service_id: # of added dates, # of removed dates, earliest date, latest date}
                 for line in cal_F:
                     dkey = '{0}._.{1}'.format(line['AgencyName'], line['service_id'])
                     cal_dic[dkey][int(line['exception_type']) - 1] += 1
+                    #print(dkey)
+
+                    try:
+                        service_date = datetime.strptime(line['date'], '%Y%m%d')
+                        if service_date < cal_dic[dkey][2]:
+                            cal_dic[dkey][2] = service_date
+                        if service_date > cal_dic[dkey][3]:
+                            cal_dic[dkey][3] = service_date
+                    except:
+                        pass
+                        traceback.print_exc()
+                        print('Continuing...')
 
             '''Each route has multiple trips
                Each trip is a unique bus line-time-week day combination (e.g. 6:47 am MON-FRI Line 71)
@@ -264,44 +277,67 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
             with arcpy.da.UpdateCursor('calendar', ['AgencyName', 'end_date']) as cursor:
                 for row in cursor:
                     if row[0] == 'Nashua_10087_132_914':
-                        row[1] = row[1].split('\n')[0]
+                        row[1] = row[1].split(',')[-1]
                         cursor.updateRow(row)
 
+            cal_ids = [] #list to store list of service_ids in calendar table
             with arcpy.da.UpdateCursor('calendar', cal_fields) as cursor:
                 for row in cursor:
+                    #Create unique key AgencyName + service_id
                     dkey = '{0}._.{1}'.format(row[0], row[1])
-                    print(dkey)
-                    try:
-                        service_len = max((datetime.strptime(str(row[3]), '%Y%m%d') -
-                                           datetime.strptime(str(row[2]), '%Y%m%d')).days,
-                                          1)  # Compute length of service in days. If service runs for only one day, assign 1
-                    except: #If fails, try automatically parsing the date
-                        service_len = max((dateutil.parser.parse(row[3]) -
-                                           dateutil.parser.parse(row[2])).days,
-                                          1)
-                    row[16] = service_len
+                    #print(dkey)
 
-                    #print(row[1])
-                    if dkey in cal_dic: #if service_id in calendar_dates dictionary
-                        row[12] = cal_dic[dkey][0] #date_added = number of added service dates in calendar_dates.txt (type 1)
-                        row[13] = cal_dic[dkey][1] #date_removed = number of removed service dates in calendar_dates.txt (type 2)
-                        row[14] = (cal_dic[dkey][0]-cal_dic[dkey][1])/(float(service_len)/7.0) #Compute average net number of exceptions/week
-                    else:
-                        row[12:15] = (0,0,0)
-                    cursor.updateRow(row) #update row halfway to avoid having to retype row[14] equation
+                    if row[2] != None and row[3] != None: #Make sure that start and end date exist (i.e. not added for calendar_dates)
+                        cal_ids.append(dkey)
+                        # Compute length of service in days. If service runs for only one day, assign 1
+                        try:
+                            service_len = max((datetime.strptime(str(row[3]), '%Y%m%d') -
+                                               datetime.strptime(str(row[2]), '%Y%m%d')).days,
+                                              1)
+                        except: #If fails, try automatically parsing the date
+                            service_len = max((dateutil.parser.parse(row[3]) -
+                                               dateutil.parser.parse(row[2])).days,
+                                              1)
+                        row[16] = service_len
 
-                    row[4] = sum(row[5:12]) #normalnum = sum(monday-sunday trips)
-                    row[15] = max(sum(row[5:12]) + row[14], 0) #adjustnum = normalnum + date_weekavg
+                        #print(row[1])
+                        if dkey in cal_dic: #if service_id in calendar_dates dictionary
+                            row[12] = cal_dic[dkey][0] #date_added = number of added service dates in calendar_dates.txt (type 1)
+                            row[13] = cal_dic[dkey][1] #date_removed = number of removed service dates in calendar_dates.txt (type 2)
+                            row[14] = (cal_dic[dkey][0]-cal_dic[dkey][1])/(float(service_len)/7.0) #Compute average net number of exceptions/week
+                        else:
+                            row[12:15] = (0,0,0)
+                        cursor.updateRow(row) #update row halfway to avoid having to retype row[14] equation
 
-                    try:
-                        sdate = datetime.strptime(str(row[2]), '%Y%m%d')
-                    except:
-                        sdate = dateutil.parser.parse(row[2])
+                        row[4] = sum(row[5:12]) #normalnum = sum(monday-sunday trips)
+                        row[15] = max(sum(row[5:12]) + row[14], 0) #adjustnum = normalnum + date_weekavg
 
-                    if sdate > datetime.now() and current == True:  # If start_date > current date
-                        row[4] = 0
-                        row[15] = 0
-                    cursor.updateRow(row)
+                        try:
+                            sdate = datetime.strptime(str(row[2]), '%Y%m%d')
+                        except:
+                            sdate = dateutil.parser.parse(row[2])
+
+                        if sdate > datetime.now() and current == True:  # If start_date > current date
+                            row[4] = 0
+                            row[15] = 0
+                        cursor.updateRow(row)
+
+
+            #For many service_id, calendar_dates contains all records while calendar does not contain the service_id
+            #Making it impossible to join it to the calendar table. Therefore, we append these records to the calendar
+            #table.
+            #Compute average weekly number from calendar_dates by service_id but only keep those that span at least a month
+
+            with arcpy.da.InsertCursor('calendar', ['AgencyName', 'service_id', 'adjustnum', 'service_len']) as cursor:
+                for dkey in cal_dic:
+                    if dkey not in cal_ids:
+                        service_len = max((cal_dic[dkey][3] - cal_dic[dkey][2]).days, 1)
+                        if service_len > 30:
+                            newrow = (dkey.split('._.')[0],
+                                      dkey.split('._.')[1],
+                                      max((cal_dic[dkey][0]-cal_dic[dkey][1])/(float(service_len)/7.0),0),
+                                      service_len)
+                            cursor.insertRow(newrow)
 
             #Join calendar and routes to trips
             arcpy.AddField_management('trips', 'Agency_service_id', 'TEXT')
@@ -330,7 +366,7 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
             arcpy.AddJoin_management('trips_view', 'Agency_route_id', 'routes', 'Agency_route_id', join_type='KEEP_ALL')
             arcpy.CopyRows_management('trips_view', 'trips_routes_calendar')
 
-            #Summarize trips by route_id & shape_id (here add
+            ######### Summarize trips by route_id & shape_id #############
             #Compute statistics in dictionary
             trc_dic = defaultdict(lambda: [0, 0, 1000000, 0])
             cfields = ['shape_id', 'AgencyName', 'route_id', 'route_type', 'normalnum', 'adjustnum', 'service_len']
@@ -338,7 +374,7 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
             with arcpy.da.SearchCursor('trips_routes_calendar', cfields) as cursor:
                 x=0
                 for row in cursor:
-                    ukey = '{0}._.{1}._.{2}._.{3}'.format(row[0], row[1], row[2], row[3])
+                    ukey = '{0}._.{1}._.{2}._.{3}'.format(str(row[0]), str(row[1]), str(row[2]), str(row[3]))
                     # 'normalnum', 'SUM'
                     try:
                         trc_dic[ukey][0] += row[4]
@@ -381,13 +417,25 @@ def GTFStoSHPweeklynumber(gtfs_dir, out_gdb, out_fc, current=True, keep=False):
                         traceback.print_exc()
                         logging.warning('{0} \n Error row: {1}'.format(e, line))
             #-------------------------------------------------------------------------------------------------------------------
-            # JOIN AND EXPORT DATE
+            # JOIN AND EXPORT DATA
             #-------------------------------------------------------------------------------------------------------------------
             print('Joining and exporting data...')
 
-            # Join trip statistics to lines
+            # Join trip statistics to lines by Agency Name and shape_id
+            arcpy.AddField_management(newfc_lines, 'Agency_shape_id', 'TEXT')
+            with arcpy.da.UpdateCursor(newfc_lines, ['Agency_shape_id', 'AgencyName', 'shape_id']) as cursor:
+                for row in cursor:
+                    row[0] = '{0}._.{1}'.format(row[1], row[2])
+                    cursor.updateRow(row)
+
+            arcpy.AddField_management('trips_routes_count', 'Agency_shape_id', 'TEXT')
+            with arcpy.da.UpdateCursor('trips_routes_count', ['Agency_shape_id', 'AgencyName', 'shape_id']) as cursor:
+                for row in cursor:
+                    row[0] = '{0}._.{1}'.format(row[1], row[2])
+                    cursor.updateRow(row)
+
             arcpy.MakeFeatureLayer_management(newfc_lines, 'shapes_lyr')
-            arcpy.AddJoin_management('shapes_lyr', 'shape_id', 'trips_routes_count', 'shape_id')
+            arcpy.AddJoin_management('shapes_lyr', 'Agency_shape_id', 'trips_routes_count', 'Agency_shape_id')
             arcpy.CopyFeatures_management('shapes_lyr', out_fc + '_routes')
 
             # -------------------------------------------------------------------------------------------------------------------
