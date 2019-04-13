@@ -10,7 +10,7 @@ import re
 UTM10 = arcpy.SpatialReference(26910)
 arcpy.CheckOutExtension('Spatial')
 
-rootdir = 'C:/Mathis/ICSL/stormwater'
+rootdir = 'D:/Mathis/ICSL/stormwater'
 def download_unzip_ned(tempdir, URLlist, outdir, outras, download=None, extract=None):
     os.chdir(tempdir)
 
@@ -53,13 +53,14 @@ def download_unzip_ned(tempdir, URLlist, outdir, outras, download=None, extract=
 
 arcpy.env.workspace = os.path.join(rootdir, 'results')
 #Download and mosaic NED 1/9 arc-second
-download_unzip_ned(tempdir = os.path.join(rootdir, 'data/NED19'), URLlist = 'cartExport_20181221_075329.txt',
-                   outdir = 'D:/Processing', outras = 'ned19_ps', download = None, extract = None)
-if not arcpy.Exists('D:/Processing/ned19_psproj'):
-    arcpy.ProjectRaster_management('D:/Processing/ned19_ps', 'D:/Processing/ned19_psproj', UTM10, resampling_type ='BILINEAR')
-if not arcpy.Exists('D:/Processing/slope19_ps'):
-    slope = arcpy.sa.Slope('D:/Processing/ned19_psproj', 'DEGREE')
-    slope.save('D:/Processing/slope19_ps')
+if not arcpy.Exists('ned19_ps'):
+    download_unzip_ned(tempdir = os.path.join(rootdir, 'data/NED19'), URLlist = 'cartExport_20181221_075329.txt',
+                       outdir = os.path.join(rootdir, 'results'), outras = 'ned19_ps', download = True, extract = True)
+if not arcpy.Exists('ned19_psproj'):
+    arcpy.ProjectRaster_management('ned19_ps', 'ned19_psproj', UTM10, resampling_type ='BILINEAR')
+# if not arcpy.Exists('slope19_ps'):
+#     slope = arcpy.sa.Slope('ned19_psproj', 'DEGREE')
+#     slope.save('slope19_ps')
 
 
 #Download and mosaic NED 1/3 arc-second
@@ -68,6 +69,6 @@ if not arcpy.Exists('ned13_ps'):
                        outdir = os.path.join(rootdir, 'results'), outras = 'ned13_ps', download=None, extract=None)
 if not arcpy.Exists('ned13_psproj'):
     arcpy.ProjectRaster_management('ned13_ps', 'ned13_psproj', UTM10, resampling_type ='BILINEAR')
-if not arcpy.Exists('slope13_ps'):
-    slope = arcpy.sa.Slope('ned13_psproj', 'DEGREE')
-    slope.save('slove13_ps')
+# if not arcpy.Exists('slope13_ps'):
+#     slope = arcpy.sa.Slope('ned13_psproj', 'DEGREE')
+#     slope.save('slove13_ps')

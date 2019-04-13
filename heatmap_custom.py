@@ -24,7 +24,7 @@ import os
 import re
 import time
 
-def customheatmap(kernel_dir, in_raster, scratch_dir, out_gdb, out_var, divnum=1, keyw='', ext='', verbose=False):
+def customheatmap(kernel_dir, in_raster, out_gdb, out_var, divnum=1, keyw='', ext='', verbose=False, scratch_dir=None):
     for kertxt in os.listdir(kernel_dir):
         #arcpy.scratchWorkspace = scratch_dir
         if re.compile('kernel.*' + keyw).match(kertxt):

@@ -31,7 +31,7 @@ def bingmean(tile, tilediceven, Neven, tiledicodd, Nodd, tiledic2am, N2am, tiled
         tmpdir = os.path.join(os.path.dirname(outdir),'tmp_{}'.format(str(tile)))
         try:
             os.mkdir(tmpdir)
-            arcpy.env.scratchWorkspace = tmpdir
+            arcpy.env.scratchWorkspace = tmpdir #Not having a separate scratch workspace can lead to bad locking issues
 
             arcpy.env.extent = "MAXOF"
             #Compute mean bing index

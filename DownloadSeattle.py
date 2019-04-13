@@ -32,8 +32,6 @@ arcpy.env.workspace = FEMAdraftgdb
 
 
 #Input geometry
-'{xmin: {0}, ymin: {1}, xmax: {2}, ymax: {3}}'
-Spatial Reference: 102100  (3857)
 
 
 def APIdownload(URL, name, itersize, ingeom, proj):

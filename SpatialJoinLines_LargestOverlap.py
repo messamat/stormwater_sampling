@@ -14,7 +14,7 @@ Optional Arguments:
         Keep All (True|False)
         Spatial Relationship (String)
 
-Description: Joins attributes from one line feature class to another based on the spatial
+Description: Joins attributes from one line feature class to another based on the spatial0000000
       relationship between the two. The target features and the
       attributes from the join features are written to the output feature
       class. Both line feature classes are first split at self intersections.
@@ -94,6 +94,7 @@ def SpatialJoinLines_LargestOverlap(target_features, join_features, outgdb, out_
     fieldmap.outputField = fld
     fieldmappings.addFieldMap(fieldmap)
     # Perform the copy
+    print('Copying...')
     arcpy.conversion.FeatureClassToFeatureClass('target_split',
                                                 os.path.dirname(out_fc),
                                                 os.path.basename(out_fc), "", fieldmappings)
