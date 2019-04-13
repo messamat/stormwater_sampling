@@ -24,6 +24,11 @@ from collections import defaultdict
 arcpy.env.overwriteOutput=True
 arcpy.env.qualifiedFieldNames = False
 
+tolerance = (2.0**0.5)*float(res.getOutput(0))/2
+fc = NTMsplitdiss
+arcpy.env.workspace = os.path.join(rootdir, 'results/NTM.gdb')
+fcbub = fc + 'buf'
+
 def ExplodeOverlappingLines(fc, tolerance, keep=True):
     print('Buffering lines...')
     idName = "ORIG_FID"
@@ -33,21 +38,21 @@ def ExplodeOverlappingLines(fc, tolerance, keep=True):
     intersect = arcpy.Intersect_analysis(fcbuf,'intersect')
 
     print('Creating dictionary of overlaps...')
-    findID = arcpy.FindIdentical_management(intersect,"explFindID","Shape")
-    arcpy.MakeFeatureLayer_management('intersect',"intlyr")
-    arcpy.AddJoin_management("intlyr",arcpy.Describe("intlyr").OIDfieldName,"explFindID","IN_FID","KEEP_ALL")
-    featseqName = "explFindID.FEAT_SEQ"
-    idNewName = "intersect." + idName
+    #Find identical shapes and put them together in a dictionary
     segIDs = defaultdict(list)
-    segIDs2 = defaultdict(list)
+    with arcpy.da.SearchCursor(intersect, ['Shape@WKT', idName]) as cursor:
+        x=0
+        for row in cursor:
+            if x%100000 == 0:
+                print(x)
+            segIDs[row[0]].append(row[1])
+            x+=1
 
-    for row in arcpy.da.SearchCursor("intlyr", [featseqName, idNewName]):
-        segIDs[row[0]].append(row[1])
+    #Build dictionary of all buffers overlapping each buffer
+    segIDs2 = defaultdict(list)
     for v in segIDs.values():
         for segID in v:
             segIDs2[segID].extend([k for k in v if k != segID and k not in segIDs2[segID]])
-
-    arcpy.RemoveJoin_management("intlyr", arcpy.Describe("explFindID").name)
 
     print('Assigning lines to non-overlapping sets...')
     grpdict = {}
