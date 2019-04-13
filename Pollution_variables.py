@@ -8,7 +8,6 @@ import os
 import zipfile
 import re
 import numpy as np
-from collections import defaultdict
 import pandas as pd
 import numpy as np
 import time
@@ -135,7 +134,7 @@ Klyr = arcpy.MakeFeatureLayer_management(OSMKing_datajoin, 'NOT SPEEDLIMIT IS NU
 arcpy.CopyFeatures_management(Klyr, OSMKing_datajoin + '_sel')
 
 #Create a compound table for all data on traffic counts
-#(only keep OSM street segments whose buffer overlapped at least 80% with original data & whose length > 5 m
+#(only keep OSM street segments whose buffer overlapped at least 80% with original data & whose length > 10 m
 # & post-2000 Pierce County data)
 fclass_ADTSPD = pd.DataFrame(
     [list(row[:4]) + [None,'Seattle'] + list(row[4:])
@@ -163,13 +162,13 @@ fclass_ADT = fclass_ADTSPD[((fclass_ADTSPD['year'] > 2000) | (fclass_ADTSPD['yea
 duplis = fclass_ADT[(fclass_ADT.duplicated('osm_id', keep=False)) &
                     (~(fclass_ADT.duplicated(['osm_id','ADT'], keep=False)))].sort_values(by=['osm_id'])
 #Keep most recent measurement for Pierce
-fclass_ADT[fclass_ADT['agency'] == 'Pierce'] = fclass_ADT[fclass_ADT['agency'] == 'Pierce'].\
+fclass_ADT.loc[fclass_ADT['agency'] == 'Pierce'] = fclass_ADT.loc[fclass_ADT['agency'] == 'Pierce'].\
     sort_values('year', ascending=False).\
     drop_duplicates('osm_id').\
     sort_index()
 #Average for each segment
 fclass_ADTnodupli = fclass_ADT.groupby('osm_id').agg({'ADT' : ['mean'], 'fclass' : ['first', 'last']})
-check = fclass_ADTnodupli[fclass_ADTnodupli['fclass','first'] != fclass_ADTnodupli['fclass','last']]
+check = fclass_ADTnodupli[fclass_ADTnodupli['fclass','first'] != fclass_ADTnodupli['fclass','last']] #Check whether there are duplicate
 #Compute median ADT for each OSM functional class
 fclass_ADTnodupli.columns = fclass_ADTnodupli.columns.droplevel()
 fclass_ADTmedian = fclass_ADTnodupli.groupby('first').median()
@@ -189,6 +188,11 @@ check = fclass_SPDnodupli[fclass_SPDnodupli['fclass','first'] != fclass_SPDnodup
 fclass_SPDnodupli.columns = fclass_SPDnodupli.columns.droplevel()
 fclass_SPDmedian = fclass_SPDnodupli.groupby('first').median()
 fclass_SPDmean = fclass_SPDnodupli.groupby('first').mean()
+
+#Join SPD and AADT
+fclass_SPDADTmedian = fclass_SPDmedian.join(fclass_ADTmedian, lsuffix='_SPD', rsuffix='_ADT')
+fclass_SPDADTmedian.to_csv(os.path.join(rootdir, 'results/OSM_SPDADTmedian.csv'))
+
 
 #Convert OSM functional categories to numbers
 #Service road ADT doesn't really make sense, as includes mostly alleys.
@@ -439,6 +443,7 @@ heatlist = Iter_ListRaster([PSgdb, gdb, os.path.join(rootdir, 'results/transit.g
 heatlist2 = heatlist + [NLCD_imp_PS, NLCD_imp_PS + '_mean.tif']
 
 ExtractMultiValuesToPoints(XRFsites_proj, heatlist2, bilinear_interpolate_values='BILINEAR')
+ExtractMultiValuesToPoints(XRFsites_proj, os.path.join(rootdir, 'results/bing/heatbing1902log300.tif'), bilinear_interpolate_values='NONE')
 ExtractMultiValuesToPoints(XRFsites_proj, NLCD_reclass_PS, bilinear_interpolate_values='NONE')
 tempfix = 'C:/Users/install/Desktop/Seattle_sampling.gdb/XRFsites_proj'
 arcpy.JoinField_management(XRFsites_proj, 'OBJECTID', tempfix, 'OBJECTID',
