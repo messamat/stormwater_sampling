@@ -49,10 +49,9 @@ else:
     arcpy.CreateFileGDB_management(os.path.join(rootdir,'results/airdata'), 'AQI.gdb')
 
 #Functions
-
 def getclosest_ij(lats, lons, latpt, lonpt):
     # find squared distance of every point on grid
-    dist_sq = (lats - latpt[0]) ** 2 + (lons - lonpt[1]) ** 2
+    dist_sq = (lats - latpt) ** 2 + (lons - lonpt) ** 2
     # 1D index of minimum dist_sq element
     minindex_flattened = dist_sq.argmin()
     # Get 2D index for latvals and lonvals arrays from 1D index
@@ -65,25 +64,15 @@ def getclosest_ij_df(lats, lons, latlonpt):
 
     if isinstance(latlonpt, pd.DataFrame):
         print('Latitude and longitude to locate are panda series, proceeding in pd framework...')
-        if latlonpt.shape[1] != 2:
+        if latlonpt.shape[1] == 2:
             #Get unique set of coordinates
-            latlonpt_unique = pd.unique(latlonpt)
-            outlist = []
-            #Iterate over each unique pair of coordinates
-            #latlonpt_unique.apply(lambda x: outlist.append((row[1], row[2]).extend(getclosest_ij(x)))
-            for row in latlonpt_unique.itertuples():
-                # find squared distance of every point on grid
-                dist_sq = (lats - float(row[1])) ** 2 + (lons - float(row[2])) ** 2
-                # 1D index of minimum dist_sq element
-                minindex_flattened = dist_sq.argmin()
-                # Get 2D index for latvals and lonvals arrays from 1D index and add it to list of tuples together with original coordinates
-                np.unravel_index(minindex_flattened, lats.shape)))
-            #Convert list of tuples to dataframe
-            return pd.DataFrame(outlist, columns=latlonpt.columns.extend(['iy_min', 'ix_min']))
+            latlonpt_unique = latlonpt.drop_duplicates()
+            #Get closest grid for each unique coordinate and return data.frame to join to original one
+            return latlonpt_unique.apply(
+                lambda x: pd.Series([x[0], x[1]] + list(getclosest_ij(lats, lons, float(x[0]), float(x[1]))),
+                                    index = list(latlonpt.columns.values) + ['iy_min', 'ix_min']), axis=1)
         else:
             raise ValueError('Wrong number of columns in latlonpt')
-
-
 
 #-----------------------------------------------------------------------------------------------------------------------
 # SELECT SITES THAT RECORD CHEMICAL CONCENTRATIONS
@@ -289,8 +278,8 @@ timevals = timev[:]
 tarray = netCDF4.num2date(timevals, timev.units) #Get all dates formated in date.time
 
 #Add x and y grid index for each unique air monitoring station record
-airdat_uniquedf.merge(getclosest_ij(lat[:],lon[:],airdat_uniquedf[['Latitude', 'Longitude']]),
-                      how='left', on=['Latitude', 'Longitude'])
+airdat_uniquedf_ij = airdat_uniquedf.merge(getclosest_ij_df(lat[:],lon[:],airdat_uniquedf[['Latitude', 'Longitude']]),
+                                           how='left', on=['Latitude', 'Longitude'])
 
 #Get netcdf value for every unique air monitoring station record (x, y, time)
 crainv.dimensions
