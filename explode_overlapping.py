@@ -24,10 +24,13 @@ from collections import defaultdict
 arcpy.env.overwriteOutput=True
 arcpy.env.qualifiedFieldNames = False
 
-tolerance = (2.0**0.5)*float(res.getOutput(0))/2
-fc = NTMsplitdiss
-arcpy.env.workspace = os.path.join(rootdir, 'results/NTM.gdb')
-fcbub = fc + 'buf'
+import cPickle as pickle
+# with open(os.path.join(rootdir, 'results/file.pkl'), 'rb') as f:
+#     segIDs2 = pickle.load(f)
+
+# f = open(os.path.join(rootdir, 'results/file.pkl'),"wb")
+# pickle.dump(segIDs2,f)
+# f.close()
 
 def ExplodeOverlappingLines(fc, tolerance, keep=True):
     print('Buffering lines...')
@@ -38,13 +41,13 @@ def ExplodeOverlappingLines(fc, tolerance, keep=True):
     intersect = arcpy.Intersect_analysis(fcbuf,'intersect')
 
     print('Creating dictionary of overlaps...')
-    #Find identical shapes and put them together in a dictionary
+    #Find identical shapes and put them together in a dictionary, unique shapes will only have one value
     segIDs = defaultdict(list)
     with arcpy.da.SearchCursor(intersect, ['Shape@WKT', idName]) as cursor:
         x=0
         for row in cursor:
             if x%100000 == 0:
-                print(x)
+                print('Processed {} records for duplicate shapes...'.format(x))
             segIDs[row[0]].append(row[1])
             x+=1
 
@@ -63,24 +66,28 @@ def ExplodeOverlappingLines(fc, tolerance, keep=True):
         else:
             grpdict[row[0]] = 1
 
-    i = 1
-    while None in grpdict.values():
+    segIDs2sort = sorted(segIDs2.items(), key=lambda x: (len(x[1]), x[0])) #Sort dictionary by number of overlapping features then by keys
+    i = 2
+    while None in grpdict.values(): #As long as there remain features not assigned to a group
         print(i)
-        ovList = []
-        for kv in sorted(segIDs2.items(), key=lambda kv: (len(kv[1]), kv[0])):
-            if grpdict[kv[0]] is None:
-                if kv[0] not in ovList:
-                    grpdict[kv[0]] = i
-                    ovList.extend(kv[1])
-        i += 1
+        ovset = set()  # list of all features overlapping features within current group
+        x = 0
+        s_update = ovset.update
+        for rec in segIDs2sort:
+            if grpdict[rec[0]] is None: #If feature has not been assigned a group
+                if rec[0] not in ovset: #If does not overlap with a feature in that group
+                    grpdict[rec[0]] = i  # Assign current group to feature
+                    s_update(rec[1])  # Add all overlapping feature to ovList
+        i += 1 #Iterate to the next group
 
     print('Writing out results to "expl" field in...'.format(fc))
     arcpy.AddField_management(fc, 'expl', "SHORT")
     with arcpy.da.UpdateCursor(fc,
                                [arcpy.Describe(fc).OIDfieldName, 'expl']) as cursor:
         for row in cursor:
-            row[1] = grpdict[row[0]]
-            cursor.updateRow(row)
+            if row[0] in grpdict:
+                row[1] = grpdict[row[0]]
+                cursor.updateRow(row)
 
     if keep == False:
         print('Deleting intermediate outputs...')
