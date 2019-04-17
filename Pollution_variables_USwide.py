@@ -506,7 +506,6 @@ with arcpy.da.UpdateCursor(NTMproj, ['adjustnum_SUM', 'adjustnum_int']) as curso
 
 #Split lines at all intersections so that small identical overlapping segments can be dissolved
 arcpy.SplitLine_management(NTMproj, NTMproj + '_split') #Split at intersection
-##########RUN###########
 arcpy.FindIdentical_management(NTMproj + '_split', "explFindID", "Shape") #Find overlapping segments and make them part of a group (FEAT_SEQ)
 arcpy.MakeFeatureLayer_management(NTMproj + '_split', "intlyr")
 arcpy.AddJoin_management("intlyr", arcpy.Describe("intlyr").OIDfieldName, "explFindID", "IN_FID", "KEEP_ALL")
@@ -523,13 +522,37 @@ tilef = 'expl'
 tilelist = list(set([row[0] for row in arcpy.da.SearchCursor(NTMsplitdiss, [tilef])]))
 outras_base = os.path.join(rootdir, 'results/NTM.gdb/transitnum_')
 arcpy.env.snapRaster = template_ras
+
 for tile in tilelist:
     outras = outras_base + str(tile)
     if not arcpy.Exists(outras):
         selexpr = '{0} = {1}'.format(tilef, tile)
-        print(selexpr)
-        arcpy.MakeFeatureLayer_management(NTMsplitdiss, 'transit_lyr', where_clause= selexpr)
-        arcpy.PolylineToRaster_conversion('transit_lyr', value_field='adjustnum_int', out_rasterdataset=outras, cellsize=res)
+        if not arcpy.Exists(outras):
+
+            #Delete intermediate stuff from previous iteration
+            try:
+                arcpy.Delete_management('transit_lyr')
+                arcpy.ClearEnvironment('scratchWorkspace')
+            except:
+                pass
+
+            #Create scratch workspace
+            tmpdir = os.path.join(os.path.dirname(os.path.dirname(outras)),
+                                  'tmp_{}'.format(str(os.path.basename(outras))))
+            os.mkdir(tmpdir)
+            arcpy.env.scratchWorkspace = tmpdir
+
+            #Rasterize
+            print(selexpr)
+            arcpy.MakeFeatureLayer_management(NTMsplitdiss, 'transit_lyr', where_clause= selexpr)
+            arcpy.PolylineToRaster_conversion('transit_lyr', value_field='SUM_NTM_routes_selproj_split_adjustnum_int',
+                                              out_rasterdataset=outras, cellsize=res)
+
+            #Remove intermediate products
+            print('Deleting scratch workspace...')
+            os.rmdir(tmpdir)
+        else:
+            print('{} already exists...'.format(outras))
 
 #Mosaic to new raster
 arcpy.env.workspace = os.path.split(outras_base)[0]
@@ -617,7 +640,6 @@ for tile in transitras_tiles:
     print('Deleting {}...'.format(tile))
     arcpy.Delete_management(tile)
 arcpy.ClearEnvironment('Workspace')
-
 
 ########################################################################################################################
 # PREPARE DATA ON ROAD GRADIENTS
