@@ -12,6 +12,7 @@ import numpy as np
 import netCDF4
 from datetime import datetime
 import timeit
+import glob
 
 #Custom functions
 from Download_gist import *
@@ -73,6 +74,79 @@ def getclosest_ij_df(lats, lons, latlonpt):
                                     index = list(latlonpt.columns.values) + ['iy_min', 'ix_min']), axis=1)
         else:
             raise ValueError('Wrong number of columns in latlonpt')
+
+def extractCDFtoDF(dfcsv, pattern, indir, varname, level=None, outcsv=None):
+    """Warning: will edit source df with extra columns"""
+    pathpattern = os.path.join(indir, pattern)
+    cdflist = glob.glob(pathpattern)
+    print('Extracting {0}'.format(cdflist))
+
+    #Get netCDF data
+    try:
+        sourcef = netCDF4.MFDataset(cdflist) #Source it as an MFD, otherwise
+    except Exception as e:
+        traceback.print_exc()
+        if isinstance(e, RuntimeError):
+            for fpath in glob.glob(cdflist):
+                try:
+                    netCDF4.Dataset(fpath)
+                except:
+                    print('Error stems from {}...'.format(fpath))
+                    pass
+
+    #Print dimensions and their length
+    print('Dimensions:')
+    for dim in sourcef.dimensions:
+        dimobj = sourcef.dimensions[dim]
+        print('{0}, length:{1}, unlimited:{2}'.format(dim, len(dimobj), dimobj.isunlimited()))
+
+    #Extract dimensional variables
+    timev = sourcef.variables['time']
+    latv, lonv = sourcef.variables['lat'], sourcef.variables['lon']
+
+    #If supplied path to csv, read csv as df
+    if isinstance(dfcsv, str) and os.path.exists(dfcsv):
+        df = pd.read_csv(dfcsv)
+    elif isinstance(dfcsv, pd.DataFrame):
+        df = dfcsv
+    else:
+        raise ValueError('Input df argument neither csv nor dataframe ')
+
+    #Make sure that right columns are in df
+    if any([c not in dfcsv.columns for c in ['Latitude', 'Longitude', 'date']]):
+        raise ValueError('Column missing in df; either Latitude, Longitude or date')
+
+    #Get index of the pixels closest to each point in df
+    print('Getting index of pixels closest to points in df...')
+    df_ij = df.merge(getclosest_ij_df(latv[:], lonv[:], df[['Latitude', 'Longitude']]),
+                     how='left', on=['Latitude', 'Longitude'])
+    #Convert dates in df to index
+    print('Converting dates to index...')
+    df_ij['date_index'] = \
+        df_ij['date'].apply(lambda x: np.where(timev[:] == netCDF4.date2num(datetime.strptime(x, '%Y-%m-%d'),
+                                                                            timev.units))[0][0])
+    #Extract variables
+    print('Extracting variable...')
+    if level is not None:
+        if 'level' in sourcef.dimensions:
+            level_i = np.where(sourcef.variables['level'][:] == level)[0][0]
+            varname = '{0}{1}'.format(varname, level)
+            df_ij[varname] = \
+                df_ij.apply(lambda x: sourcef[x.date_index, level_i, int(x['iy_min']), int(x['ix_min'])], axis=1)
+        else:
+            raise ValueError("A 'level' argument was provided but netCDF does not have a level dimension")
+    else:
+        df_ij[varname] = \
+            df_ij.apply(lambda x: sourcef[x.date_index, int(x['iy_min']), int(x['ix_min'])], axis=1)
+
+    #Delete intermediate columns
+    print('Deleting indices columns')
+    df.drop(['iymin','ix_min','date_index'], axis=1)
+
+    #Write df out
+    if (isinstance(dfcsv, str) and os.path.exists(dfcsv)) or (outcsv is not None):
+        print('Writing df out...')
+        df_ij.to_csv(dfcsv if outcsv is None else outcsv)
 
 #-----------------------------------------------------------------------------------------------------------------------
 # SELECT SITES THAT RECORD CHEMICAL CONCENTRATIONS
@@ -230,46 +304,60 @@ for file in spec25_list + spec10_list:
     dlfile(file, outpath=os.path.join(AQIdir))
 
 #Collate all data
-airdatall = os.path.join(AQIdir, 'daily_SPEC_collate.csv')
-airdatlist = mergedel(AQIdir, 'daily_.*SPEC.*[.]csv$', airdatall, verbose=True)
-airdat_df = pd.read_csv(airdatall)
-airdat_df.shape
-airdat_df.dtypes
+airdat_uniquetab = os.path.join(AQIdir, 'daily_SPEC_unique.csv')
+if not os.path.exists(airdat_uniquetab):
+    airdatall = os.path.join(AQIdir, 'daily_SPEC_collate.csv')
+    airdatlist = mergedel(AQIdir, 'daily_.*SPEC.*[.]csv$', airdatall, verbose=True)
+    airdat_df = pd.read_csv(airdatall)
+    airdat_df.shape
+    airdat_df.dtypes
 
-#Compute unique ID for each monitoring site
-airdat_df['UID'] = airdat_df['State Code'].astype(str).astype(str) + \
-                   airdat_df['County Code'].astype(str) + \
-                   airdat_df['Site Num'].astype(str)
+    #Compute unique ID for each monitoring site
+    airdat_df['UID'] = airdat_df['State Code'].astype(str).astype(str) + \
+                       airdat_df['County Code'].astype(str) + \
+                       airdat_df['Site Num'].astype(str)
 
-#Compute df of unique UID-time records to extract meteorological variables with
-subcols = ['UID', 'Latitude', 'Longitude', 'Date Local']
-airdat_unique = pd.unique(
-    airdat_df[subcols].
-        apply(lambda x: '._.'.join(x.astype(str)), axis=1)) #Concatenate columns
+    #Compute df of unique UID-time records to extract meteorological variables with
+    subcols = ['UID', 'Latitude', 'Longitude', 'Date Local']
+    airdat_unique = pd.unique(
+        airdat_df[subcols].
+            apply(lambda x: '._.'.join(x.astype(str)), axis=1)) #Concatenate columns
 
-airdat_uniquedf = pd.DataFrame(
-    [i.split('._.') for i in list(airdat_unique)],
-    columns = subcols) #Resplit and format to df
-airdat_uniquedf.to_csv(os.path.join(AQIdir, 'daily_SPEC_unique.csv'))
+    airdat_uniquedf = pd.DataFrame(
+        [i.split('._.') for i in list(airdat_unique)],
+        columns = subcols) #Resplit and format to df
+    airdat_uniquedf.to_csv(os.path.join(AQIdir, 'daily_SPEC_unique.csv'))
+else:
+    airdat_uniquedf = pd.read_csv(airdat_uniquetab)
+
+airdat_uniquedf['date'] = airdat_uniquedf['Date Local']
 
 #-----------------------------------------------------------------------------------------------------------------------
 # EXTRACT ALL METEOROLOGICAL VARIABLES FOR EACH STATION-DATE COMBINATION
 #-----------------------------------------------------------------------------------------------------------------------
 #Read all years of crain data
-crainf = netCDF4.MFDataset(os.path.join(NARRdir, 'crain.*.nc'))
+extractCDFtoDF(airdat_uniquedf, pattern='crain.*.nc', indir=NARRdir,
+               varname='crain', level=None, outcsv=os.path.join(rootdir, 'results/daily_SPEC_crain.csv'))
 
-#Check dimensions
-for dim in crainf.dimensions:
-    print(dim)
-    dimobj = crainf.dimensions[dim]
-    print(len(dimobj))
-    print(dimobj.isunlimited())
 
-for a in crainf.variables:
+
+
+# pattern = 'hgt.*.nc'
+# varname = 'hgt'
+# df = airdat_uniquedf
+# indir = NARRdir
+# level = 850
+
+
+
+#Check variables
+for a in air2mf.variables:
     print(a)
-    varobj = crainf.variables[a]
+    varobj = air2mf.variables[a]
     print(varobj)
 
+levelv = air2mf.variables['level']
+levelv[:]
 #Get variables
 crainv = crainf.variables['crain']
 timev = crainf.variables['time']
@@ -281,8 +369,10 @@ tarray = netCDF4.num2date(timevals, timev.units) #Get all dates formated in date
 airdat_uniquedf_ij = airdat_uniquedf.merge(getclosest_ij_df(lat[:],lon[:],airdat_uniquedf[['Latitude', 'Longitude']]),
                                            how='left', on=['Latitude', 'Longitude'])
 
-#Get netcdf value for every unique air monitoring station record (x, y, time)
-crainv.dimensions
-crainv[timevals == netCDF4.date2num(datetime.strptime('20181126', '%Y%m%d'), timev.units),
-       iy_min, ix_min]
+#Get netcdf value for every unique air monitoring station record (x, y, time) into new column
+airdat_uniquedf_ij['date_index'] = \
+    airdat_uniquedf_ij['date'].apply(lambda x:
+                                     np.where(timevals == netCDF4.date2num(datetime.strptime(x, '%Y-%m-%d'), timev.units))[0][0])
 
+airdat_uniquedf_ij['crain'] =\
+    airdat_uniquedf_ij.apply(lambda x: crainv[x.date_index, int(x['iy_min']), int(x['ix_min'])], axis=1)
