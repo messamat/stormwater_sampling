@@ -76,6 +76,7 @@ def ExplodeOverlappingLines(fc, tolerance, keep=True):
         for rec in segIDs2sort:
             if grpdict[rec[0]] is None: #If feature has not been assigned a group
                 if rec[0] not in ovset: #If does not overlap with a feature in that group
+                    print(rec[0])
                     grpdict[rec[0]] = i  # Assign current group to feature
                     s_update(rec[1])  # Add all overlapping feature to ovList
         i += 1 #Iterate to the next group
