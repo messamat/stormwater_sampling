@@ -10,9 +10,10 @@ from shapely.geometry import Point
 import us
 import numpy as np
 import netCDF4
-from datetime import datetime
+from datetime import datetime, timedelta
 import timeit
 import glob
+import dateparser
 
 #Custom functions
 from Download_gist import *
@@ -30,8 +31,16 @@ if not os.path.isdir(NARRdir):
     os.mkdir(NARRdir)
 
 #Import variables
-monitors = pd.read_csv(os.path.join(AQIdir, 'aqs_monitors/aqs_monitors.csv'))
-sites = pd.read_csv(os.path.join(AQIdir, 'aqs_sites/aqs_sites.csv'))
+monitortab = os.path.join(AQIdir, 'aqs_monitors.csv')
+sitetab = os.path.join(AQIdir, 'aqs_sites.csv')
+if not os.path.exists(monitortab):
+    print('Monitor tab does not exist...')
+    dlfile('https://aqs.epa.gov/aqsweb/airdata/aqs_monitors.zip', AQIdir)
+monitors = pd.read_csv(monitortab)
+if not os.path.exists(sitetab):
+    print('Site tab does not exist...')
+    dlfile('https://aqs.epa.gov/aqsweb/airdata/aqs_sites.zip', AQIdir)
+sites = pd.read_csv(sitetab)
 
 #Output variables
 outdir = os.path.join(rootdir, 'results/airdata')
@@ -48,6 +57,7 @@ if arcpy.Exists(AQIgdb):
     print('Geodatabase already exists')
 else:
     arcpy.CreateFileGDB_management(os.path.join(rootdir,'results/airdata'), 'AQI.gdb')
+airdat_uniquetab = os.path.join(AQIdir, 'daily_SPEC_unique.csv')
 
 #Functions
 def getclosest_ij(lats, lons, latpt, lonpt):
@@ -75,7 +85,7 @@ def getclosest_ij_df(lats, lons, latlonpt):
         else:
             raise ValueError('Wrong number of columns in latlonpt')
 
-def extractCDFtoDF(dfcsv, pattern, indir, varname, level=None, outcsv=None):
+def extractCDFtoDF(dfcsv, pattern, indir, varname, datecol = None, level=None, outcsv=None):
     """Warning: will edit source df with extra columns"""
     pathpattern = os.path.join(indir, pattern)
     cdflist = glob.glob(pathpattern)
@@ -113,18 +123,25 @@ def extractCDFtoDF(dfcsv, pattern, indir, varname, level=None, outcsv=None):
         raise ValueError('Input df argument neither csv nor dataframe ')
 
     #Make sure that right columns are in df
-    if any([c not in dfcsv.columns for c in ['Latitude', 'Longitude', 'date']]):
+    if datecol is None:
+        datecol = 'date'
+    if any([c not in df.columns for c in ['Latitude', 'Longitude', datecol]]):
         raise ValueError('Column missing in df; either Latitude, Longitude or date')
 
     #Get index of the pixels closest to each point in df
     print('Getting index of pixels closest to points in df...')
     df_ij = df.merge(getclosest_ij_df(latv[:], lonv[:], df[['Latitude', 'Longitude']]),
                      how='left', on=['Latitude', 'Longitude'])
+
     #Convert dates in df to index
     print('Converting dates to index...')
-    df_ij['date_index'] = \
-        df_ij['date'].apply(lambda x: np.where(timev[:] == netCDF4.date2num(datetime.strptime(x, '%Y-%m-%d'),
-                                                                            timev.units))[0][0])
+    if df_ij[datecol].dtype.name == 'datetime64[ns]':
+        df_ij['date_index'] = df_ij[datecol].apply(
+            lambda x: np.where(timev[:] == netCDF4.date2num(x, timev.units))[0][0])
+    else:
+        df_ij['date_index'] = df_ij[datecol].apply(
+            lambda x: np.where(timev[:] == netCDF4.date2num(dateparser.parse(x),timev.units))[0][0])
+
     #Extract variables
     print('Extracting variable...')
     if level is not None:
@@ -158,7 +175,6 @@ elems_out = ['monoxide', 'dioxide', 'H', 'C', 'O', 'N', 'S', 'Hydrogen', 'Carbon
 elems_regex = re.compile('|'.join(['\\b{}\\b'.format(e) for e in elems]), re.IGNORECASE)
 elemsout_regex = re.compile('|'.join(['\\b{}\\b'.format(e) for e in elems_out]), re.IGNORECASE)
 #Create list of parameter codes based on https://aqs.epa.gov/aqsweb/documents/codetables/methods_all.html
-######################### RECHECK PARAMETER CODES ###############
 paramsel = ['11','12','14','22','65','82','85','86','89']
 param_regex = re.compile('|'.join(['(^{}.*)'.format(p) for p in paramsel]))
 monitors_chem = monitors.loc[(monitors['Parameter Code'].astype(str).str.contains(param_regex)) &
@@ -231,11 +247,47 @@ sites_bufdis.to_file(sites_outbufdis, driver = 'ESRI Shapefile')
 sites_bufunion.to_file(sites_outbufunion, driver = 'ESRI Shapefile')
 
 #-----------------------------------------------------------------------------------------------------------------------
+# DOWNLOAD SPECIATION DATA FOR ALL MONITORING SITES
+#-----------------------------------------------------------------------------------------------------------------------
+yearlist = range(2014, 2020)
+epadl_url = "https://aqs.epa.gov/aqsweb/airdata/"
+spec25_list = [os.path.join(epadl_url, "daily_SPEC_{}.zip".format(year)) for year in yearlist]
+spec10_list = [os.path.join(epadl_url, "daily_PM10SPEC_{}.zip".format(year)) for year in yearlist]
+for file in spec25_list + spec10_list:
+    dlfile(file, outpath=os.path.join(AQIdir))
+
+#Collate all data
+if not os.path.exists(airdat_uniquetab):
+    airdatall = os.path.join(AQIdir, 'daily_SPEC_collate.csv')
+    airdatlist = mergedel(AQIdir, 'daily_.*SPEC.*[.]csv$', airdatall, verbose=True)
+    airdat_df = pd.read_csv(airdatall)
+    airdat_df.shape
+    airdat_df.dtypes
+
+    print('Compute unique ID for each monitoring site...')
+    airdat_df['UID'] = airdat_df['State Code'].astype(str).astype(str) + \
+                       airdat_df['County Code'].astype(str) + \
+                       airdat_df['Site Num'].astype(str)
+
+    print('Compute df of unique UID-time records to extract meteorological variables with...')
+    subcols = ['UID', 'Latitude', 'Longitude', 'Date Local']
+    airdat_unique = pd.unique(
+        airdat_df[subcols].
+            apply(lambda x: '._.'.join(x.astype(str)), axis=1)) #Concatenate columns
+
+    airdat_uniquedf = pd.DataFrame(
+        [i.split('._.') for i in list(airdat_unique)],
+        columns = subcols) #Resplit and format to df
+    airdat_uniquedf['date'] = airdat_uniquedf['Date Local']
+    airdat_uniquedf.to_csv(airdat_uniquetab)
+else:
+    airdat_uniquedf = pd.read_csv(airdat_uniquetab)
+
+#-----------------------------------------------------------------------------------------------------------------------
 # DOWNLOAD DAILY METEOROLOGICAL DATA FOR AQI STATIONS
 # Get selected covariates from Porter et al. 2015:
 # Investigating the observed sensitivities of air-quality extremes to meteorological drivers via quantile regression
 #-----------------------------------------------------------------------------------------------------------------------
-
 # All text in Table 2, second panel of Porter et al. 2015
 porter2015_covarlist_raw = """rhum.2m_mean dswrf_mean air.2m_max hpbl_mean
 air.2m_max wspd.10m_mean air.sfc_9x9_nightmin.6daymax vwnddir.10m_mean
@@ -267,7 +319,6 @@ covar_pm25 = [var.split('_') for var in
               if var is not None]
 #Get variable base name for downloading NARR data
 covar_pm25_base = list(set([var[0] for var in covar_pm25]))
-covar_pm25_base
 
 #Modify list to only keep raw variables and match NARR abbreviations
 covar_sub = [var for var in covar_pm25_base if var not in ['lts', 'fire', 'uwnddir.10m', 'vwnddir.10m', 'wspd.10m', 'rpi']] +\
@@ -282,7 +333,7 @@ for var in covar_sub:
         varfolder_dic[var] = 'monolevel'
 
 #Download all NARR data from 2010 to 2018 for each variable
-yearlist = range(2010, 2019)
+yearlist = range(2014, 2020)
 for var in varfolder_dic:
     if varfolder_dic[var] == 'pressure':
         varbase = var.split('.')[0]
@@ -294,85 +345,64 @@ for var in varfolder_dic:
         downloadNARR(folder=varfolder_dic[var], variable=var, years=yearlist, outdir=NARRdir)
 
 #-----------------------------------------------------------------------------------------------------------------------
-# DOWNLOAD SPECIATION DATA FOR ALL MONITORING SITES
-#-----------------------------------------------------------------------------------------------------------------------
-yearlist = range(2010, 2019)
-epadl_url = "https://aqs.epa.gov/aqsweb/airdata/"
-spec25_list = [os.path.join(epadl_url, "daily_SPEC_{}.zip".format(year)) for year in yearlist]
-spec10_list = [os.path.join(epadl_url, "daily_PM10SPEC_{}.zip".format(year)) for year in yearlist]
-for file in spec25_list + spec10_list:
-    dlfile(file, outpath=os.path.join(AQIdir))
-
-#Collate all data
-airdat_uniquetab = os.path.join(AQIdir, 'daily_SPEC_unique.csv')
-if not os.path.exists(airdat_uniquetab):
-    airdatall = os.path.join(AQIdir, 'daily_SPEC_collate.csv')
-    airdatlist = mergedel(AQIdir, 'daily_.*SPEC.*[.]csv$', airdatall, verbose=True)
-    airdat_df = pd.read_csv(airdatall)
-    airdat_df.shape
-    airdat_df.dtypes
-
-    #Compute unique ID for each monitoring site
-    airdat_df['UID'] = airdat_df['State Code'].astype(str).astype(str) + \
-                       airdat_df['County Code'].astype(str) + \
-                       airdat_df['Site Num'].astype(str)
-
-    #Compute df of unique UID-time records to extract meteorological variables with
-    subcols = ['UID', 'Latitude', 'Longitude', 'Date Local']
-    airdat_unique = pd.unique(
-        airdat_df[subcols].
-            apply(lambda x: '._.'.join(x.astype(str)), axis=1)) #Concatenate columns
-
-    airdat_uniquedf = pd.DataFrame(
-        [i.split('._.') for i in list(airdat_unique)],
-        columns = subcols) #Resplit and format to df
-    airdat_uniquedf.to_csv(os.path.join(AQIdir, 'daily_SPEC_unique.csv'))
-else:
-    airdat_uniquedf = pd.read_csv(airdat_uniquetab)
-
-airdat_uniquedf['date'] = airdat_uniquedf['Date Local']
-
-#-----------------------------------------------------------------------------------------------------------------------
 # EXTRACT ALL METEOROLOGICAL VARIABLES FOR EACH STATION-DATE COMBINATION
 #-----------------------------------------------------------------------------------------------------------------------
-#Read all years of crain data
-extractCDFtoDF(airdat_uniquedf, pattern='crain.*.nc', indir=NARRdir,
-               varname='crain', level=None, outcsv=os.path.join(rootdir, 'results/daily_SPEC_crain.csv'))
+#Expand df to extract 3-hourly meteorological averages
+airdat_uniquedfexp = airdat_uniquedf.reindex(airdat_uniquedf.index.repeat(8))
+airdat_uniquedfexp['datetime_dupli'] = airdat_uniquedfexp.groupby(level=0).cumcount()
+airdat_uniquedfexp['datetime_dupli'] = airdat_uniquedfexp.apply(
+    lambda x: datetime.strptime(x.date,'%Y-%m-%d') + timedelta(hours=x.datetime_dupli*3),
+    axis=1)
+
+#Dictionary of variables to extract
+cdfvardict = {
+    'air.2m': ['air.2m*.nc', None],
+    'air.sfc': ['air.sfc*.nc', None],
+    'crain': ['crain.*.nc', None],
+    'dswrf': ['dswrf.*.nc', None],
+    'hgt.850': ['hgt.*.nc', 850],
+    'hpbl': ['hpbl.*.nc', None],
+    'lftx4': ['lftx4.*.nc', None],
+    'pres.sfc': ['pres.sfc.*.nc', None],
+    'rhum.2m': ['rhum.2m.*.nc', None],
+    'shum.2m': ['shum.2m.*.nc', None],
+    'uwnd.10m': ['uwnd.10m.*.nc', None],
+    'vwnd.10m': ['vwnd.10m.*.nc', None],
+    'vwnd.500': ['vwnd.2*.nc', 500]
+}
+
+#Iterate through variables to extract
+for var in cdfvardict.keys():
+    extractCDFtoDF(airdat_uniquedfexp, pattern= cdfvardict[var][0], indir=NARRdir, varname= var,
+                   datecol = 'datetime_dupli', level=cdfvardict[var][1],
+                   outcsv=os.path.join(rootdir, 'results/daily_SPEC_{}.csv'.format(var.replace('.', '_'))))
+
+#Extract data
+extractCDFtoDF(airdat_uniquedfexp, pattern='crain.*.nc', indir=NARRdir, varname='crain',
+               datecol = 'datetime_dupli', level=None, outcsv=os.path.join(rootdir, 'results/daily_SPEC_crain.csv'))
+
+
+################# WORKING
+# df_ij['date_index'] = df_ij[datecol].apply(
+#             lambda x: np.where(timev[:] == netCDF4.date2num(x, timev.units))[0][0])
+
+
+#-----------------------------------------------------------------------------------------------------------------------
+# COMPUTE DERIVED VARIABLES
+#-----------------------------------------------------------------------------------------------------------------------
+cdfvardict.keys()
 
 
 
+##############################################################################################################
+####################################################################################################################################
+# EXTRA STUFF
+# air2m = netCDF4.Dataset(os.path.join(NARRdir, 'air.2m.2016.nc'))
+# air2m = netCDF4.Dataset(os.path.join(NARRdir, 'air.2m.2016.nc'))
+# air2m.close()
+# #Check variables
+# for a in air2m.variables:
+#     print(a)
+#     varobj = air2m.variables[a]
+#     print(varobj)
 
-# pattern = 'hgt.*.nc'
-# varname = 'hgt'
-# df = airdat_uniquedf
-# indir = NARRdir
-# level = 850
-
-
-
-#Check variables
-for a in air2mf.variables:
-    print(a)
-    varobj = air2mf.variables[a]
-    print(varobj)
-
-levelv = air2mf.variables['level']
-levelv[:]
-#Get variables
-crainv = crainf.variables['crain']
-timev = crainf.variables['time']
-lat, lon = crainf.variables['lat'], crainf.variables['lon']
-timevals = timev[:]
-tarray = netCDF4.num2date(timevals, timev.units) #Get all dates formated in date.time
-
-#Add x and y grid index for each unique air monitoring station record
-airdat_uniquedf_ij = airdat_uniquedf.merge(getclosest_ij_df(lat[:],lon[:],airdat_uniquedf[['Latitude', 'Longitude']]),
-                                           how='left', on=['Latitude', 'Longitude'])
-
-#Get netcdf value for every unique air monitoring station record (x, y, time) into new column
-airdat_uniquedf_ij['date_index'] = \
-    airdat_uniquedf_ij['date'].apply(lambda x:
-                                     np.where(timevals == netCDF4.date2num(datetime.strptime(x, '%Y-%m-%d'), timev.units))[0][0])
-
-airdat_uniquedf_ij['crain'] =\
-    airdat_uniquedf_ij.apply(lambda x: crainv[x.date_index, int(x['iy_min']), int(x['ix_min'])], axis=1)
