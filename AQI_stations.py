@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 import timeit
 import glob
 import dateparser
+import xarray as xr
 
 #Custom functions
 from Download_gist import *
@@ -93,7 +94,7 @@ def extractCDFtoDF(dfcsv, pattern, indir, varname, datecol = None, level=None, o
 
     #Get netCDF data
     try:
-        sourcef = netCDF4.MFDataset(cdflist) #Source it as an MFD, otherwise
+        sourcef = netCDF4.MFDataset(cdflist)
     except Exception as e:
         traceback.print_exc()
         if isinstance(e, RuntimeError):
@@ -135,12 +136,12 @@ def extractCDFtoDF(dfcsv, pattern, indir, varname, datecol = None, level=None, o
 
     #Convert dates in df to index
     print('Converting dates to index...')
-    if df_ij[datecol].dtype.name == 'datetime64[ns]':
-        df_ij['date_index'] = df_ij[datecol].apply(
-            lambda x: np.where(timev[:] == netCDF4.date2num(x, timev.units))[0][0])
-    else:
-        df_ij['date_index'] = df_ij[datecol].apply(
-            lambda x: np.where(timev[:] == netCDF4.date2num(dateparser.parse(x),timev.units))[0][0])
+    if df_ij[datecol].dtype.name != 'datetime64[ns]':
+        print('First converting {} to date datetime64 format'.format(datecol))
+        df_ij[datecol] = dateparser.parse(datecol)
+    df_ij = df_ij.merge(pd.DataFrame({'date_index': range(len(timev[:])),
+                                      datecol: netCDF4.num2date(timev[:], timev.units)}),
+                        on=datecol)
 
     #Extract variables
     print('Extracting variable...')
@@ -349,10 +350,8 @@ for var in varfolder_dic:
 #-----------------------------------------------------------------------------------------------------------------------
 #Expand df to extract 3-hourly meteorological averages
 airdat_uniquedfexp = airdat_uniquedf.reindex(airdat_uniquedf.index.repeat(8))
-airdat_uniquedfexp['datetime_dupli'] = airdat_uniquedfexp.groupby(level=0).cumcount()
-airdat_uniquedfexp['datetime_dupli'] = airdat_uniquedfexp.apply(
-    lambda x: datetime.strptime(x.date,'%Y-%m-%d') + timedelta(hours=x.datetime_dupli*3),
-    axis=1)
+airdat_uniquedfexp['datetime_dupli'] = pd.to_datetime(airdat_uniquedfexp['date'], format='%Y-%m-%d') + \
+                                       pd.to_timedelta(airdat_uniquedfexp.groupby(level=0).cumcount()*3, unit='h')
 
 #Dictionary of variables to extract
 cdfvardict = {
@@ -383,15 +382,23 @@ extractCDFtoDF(airdat_uniquedfexp, pattern='crain.*.nc', indir=NARRdir, varname=
 
 
 ################# WORKING
-# df_ij['date_index'] = df_ij[datecol].apply(
-#             lambda x: np.where(timev[:] == netCDF4.date2num(x, timev.units))[0][0])
+df = airdat_uniquedfexp
+datecol = 'datetime_dupli'
+sourcef = netCDF4.Dataset(os.path.join(NARRdir, 'air.2m.2016.nc'))
+timev = sourcef.variables['time']
+varname = 'crain'
+
+#https://stackoverflow.com/questions/35281841/importing-and-decoding-dataset-in-xarray-to-avoid-conflicting-fillvalue-and-mis
+sourcef = xr.open_mfdataset(glob.glob(os.path.join(NARRdir, 'crain*.nc')))
+sourcef
+check = sourcef.variables['crain'][:, list(df_ij.iy_min.astype(int)), list(df_ij.ix_min.astype(int))]
 
 
 #-----------------------------------------------------------------------------------------------------------------------
 # COMPUTE DERIVED VARIABLES
 #-----------------------------------------------------------------------------------------------------------------------
 cdfvardict.keys()
-
+covar_pm25
 
 
 ##############################################################################################################
@@ -401,8 +408,8 @@ cdfvardict.keys()
 # air2m = netCDF4.Dataset(os.path.join(NARRdir, 'air.2m.2016.nc'))
 # air2m.close()
 # #Check variables
-# for a in air2m.variables:
-#     print(a)
-#     varobj = air2m.variables[a]
-#     print(varobj)
+for a in air2m.variables:
+    print(a)
+    varobj = air2m.variables[a]
+    print(varobj)
 
