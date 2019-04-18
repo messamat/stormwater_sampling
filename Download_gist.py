@@ -69,6 +69,8 @@ def unzip(infile):
                 print('Overwriting {}...'.format(', '.join(listcheck)))
             zipf.extractall(os.path.split(infile)[0])
         del zipf
+    else:
+        raise ValueError('Not a zip file')
 
 def dlfile(url, outpath, outfile=None, fieldnames=None):
     """Function to download file from URL path and unzip it.
@@ -112,21 +114,32 @@ def dlfile(url, outpath, outfile=None, fieldnames=None):
                             writer.writerow(row)
 
                 else: #Otherwise, just try reading
-                    with open(out, "wb") as local_file:
-                        local_file.write(f.read())
+                    try: #Try writing to local file
+                        with open(out, "wb") as local_file:
+                            local_file.write(f.read())
+                    except Exception: #If fails and is zip, directly download zip in memory
+                        print('Try downloading zip in memory...')
+                        os.remove(out)
+                        if os.path.splitext(url)[1] == '.zip':
+                            z = zipfile.ZipFile(io.BytesIO(f.content))
             else:
                 print('{} already exists...'.format(out))
+        else:
+            print('File not downloadable...')
 
+        # Unzip downloaded file
+        try:
+            unzip(out)
+        except:
+            if isinstance(z, zipfile.ZipFile):
+                z.extractall(os.path.split(out)[0])
     #handle errors
     except requests.exceptions.HTTPError, e:
         print "HTTP Error:", e.code, url
-    except Exception as e:
-        print e
+    except Exception:
+        traceback.print_exc()
         if os.path.exists(out):
             os.remove(out)
-
-    #Unzip downloaded file
-    unzip(out)
 
 def APIdownload(baseURL, workspace, basename, itersize, IDlist, geometry):
     IDrange = range(IDlist[0], IDlist[1], itersize)
@@ -260,7 +273,7 @@ def downloadNARR(folder, variable, years, outdir=None):
     #Open ftp connection
     try:
         failedlist = []
-        rooturl = "ftp://ftp.cdc.noaa.gov/Datasets/NARR/Dailies/{0}".format(folder)
+        rooturl = "ftp://ftp.cdc.noaa.gov/Datasets/NARR/{0}".format(folder)
         urlp = urlparse.urlparse(rooturl)
         ftp = ftplib.FTP(urlp.netloc)
         ftp.login()
@@ -273,7 +286,10 @@ def downloadNARR(folder, variable, years, outdir=None):
         for year in years:
             outfile = "{0}.{1}.nc".format(variable, year)
             out = os.path.join(outdir, outfile)
-            if not os.path.exists(out):
+            if not os.path.exists(out) or os.path.getsize(out)==0L:
+                if os.path.getsize(out)==0L:
+                    print('Deleting empty dataset...')
+                    os.remove(out)
                 # ftp download
                 print "downloading " + outfile
                 try:
@@ -282,6 +298,9 @@ def downloadNARR(folder, variable, years, outdir=None):
                 except Exception:
                     traceback.print_exc()
                     failedlist.append(outfile)
+                    #Remove empty dataset
+                    if os.path.exists(out) and os.path.getsize(out) == 0L:
+                        os.remove(out)
                     pass
             else:
                 print('{} already exists... skipping'.format(outfile))
