@@ -145,9 +145,9 @@ if __name__ == '__main__':
     ntileodd = 0
     for i in mlclist:
         if (int(i[7:9]) % 2) > 0:
-            tileodd[os.path.split(i)[1][13:22]].append(os.path.join(res, i))
+            tileodd[re.sub('[a-zA-Z]', '', os.path.split(i)[1][13:22])].append(os.path.join(res, i))
         elif (int(i[7:9]) % 2) == 0:
-            tileeven[os.path.split(i)[1][13:22]].append(os.path.join(res, i))
+            tileeven[re.sub('[a-zA-Z]', '', os.path.split(i)[1][13:22])].append(os.path.join(res, i))
         datetimes.append(os.path.split(i)[1][0:12])
     daterange = list(sorted(set(datetimes)))
     ntileeven = len([h for h in daterange if (int(h[7:9]) % 2) == 0])
