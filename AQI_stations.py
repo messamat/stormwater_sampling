@@ -58,33 +58,44 @@ if arcpy.Exists(AQIgdb):
     print('Geodatabase already exists')
 else:
     arcpy.CreateFileGDB_management(os.path.join(rootdir,'results/airdata'), 'AQI.gdb')
+
+airdatall = os.path.join(AQIdir, 'daily_SPEC_collate.csv')
 airdat_uniquetab = os.path.join(AQIdir, 'daily_SPEC_unique.csv')
 
 #Functions
-def getclosest_ij(lats, lons, latpt, lonpt):
+def pdtogpd_datum(df, datum):
+    "Subset df based on datum and create Geodataframe with the right assigned datum"
+    crs = {'WGS84': {'init': 'epsg:4326'}, 'NAD27': {'init': 'epsg:4267'},'NAD83': {'init': 'epsg:6318'}} #'NAD83': {'init': 'epsg:1116'}}
+    subdat = df[df['Datum']==datum]
+    geom = [Point(xy) for xy in zip(subdat.Longitude, subdat.Latitude)]
+    return(gpd.GeoDataFrame(subdat, crs=crs[datum], geometry=geom))
+
+
+def getclosest_ij(X, Y, Xpt, Ypt):
     # find squared distance of every point on grid
-    dist_sq = (lats - latpt) ** 2 + (lons - lonpt) ** 2
+    dist_sq = (X - Xpt) ** 2 + (Y - Ypt) ** 2
     # 1D index of minimum dist_sq element
     minindex_flattened = dist_sq.argmin()
     # Get 2D index for latvals and lonvals arrays from 1D index
-    return np.unravel_index(minindex_flattened, lats.shape)
+    return np.unravel_index(minindex_flattened, X.shape)
 
-def getclosest_ij_df(lats, lons, latlonpt):
+def getclosest_ij_df(X, Y, XYpt):
     """# A function to find the index of the point closest pt(in squared distance) to give lat/lon value.
     latlonpt may be a 2-column dataframe (lat-lon) or a list/tuple of lat=lon for a point.
     If data.frame, returns a data.frame of unique coordinates from the original data.frame together with index columns"""
 
-    if isinstance(latlonpt, pd.DataFrame):
-        print('Latitude and longitude to locate are panda series, proceeding in pd framework...')
-        if latlonpt.shape[1] == 2:
+    if isinstance(XYpt, pd.DataFrame):
+        print('x and y to locate are panda series, proceeding in pd framework...')
+        if XYpt.shape[1] == 2:
             #Get unique set of coordinates
-            latlonpt_unique = latlonpt.drop_duplicates()
+            xypt_unique = XYpt.drop_duplicates()
             #Get closest grid for each unique coordinate and return data.frame to join to original one
-            return latlonpt_unique.apply(
-                lambda x: pd.Series([x[0], x[1]] + list(getclosest_ij(lats, lons, float(x[0]), float(x[1]))),
-                                    index = list(latlonpt.columns.values) + ['iy_min', 'ix_min']), axis=1)
+            return xypt_unique.apply(
+                lambda x: pd.Series([x[0], x[1]] +
+                                    list(getclosest_ij(X, Y, float(x[0]), float(x[1]))),
+                                    index = list(XYpt.columns.values) + ['ix_min', 'iy_min']), axis=1)
         else:
-            raise ValueError('Wrong number of columns in latlonpt')
+            raise ValueError('Wrong number of columns in XYpt')
 
 def extractCDFtoDF(dfcsv, pattern, indir, varname, datecol = None, level=None, outcsv=None):
     """Warning: will edit source df with extra columns"""
@@ -94,7 +105,7 @@ def extractCDFtoDF(dfcsv, pattern, indir, varname, datecol = None, level=None, o
 
     #Get netCDF data
     try:
-        sourcef = netCDF4.MFDataset(cdflist)
+        sourcef = xr.open_mfdataset(cdflist)
     except Exception as e:
         traceback.print_exc()
         if isinstance(e, RuntimeError):
@@ -107,13 +118,8 @@ def extractCDFtoDF(dfcsv, pattern, indir, varname, datecol = None, level=None, o
 
     #Print dimensions and their length
     print('Dimensions:')
-    for dim in sourcef.dimensions:
-        dimobj = sourcef.dimensions[dim]
-        print('{0}, length:{1}, unlimited:{2}'.format(dim, len(dimobj), dimobj.isunlimited()))
-
-    #Extract dimensional variables
-    timev = sourcef.variables['time']
-    latv, lonv = sourcef.variables['lat'], sourcef.variables['lon']
+    for dim in sourcef.dims:
+        print('{0}, length: {1}'.format(dim, sourcef.dims[dim]))
 
     #If supplied path to csv, read csv as df
     if isinstance(dfcsv, str) and os.path.exists(dfcsv):
@@ -126,21 +132,26 @@ def extractCDFtoDF(dfcsv, pattern, indir, varname, datecol = None, level=None, o
     #Make sure that right columns are in df
     if datecol is None:
         datecol = 'date'
-    if any([c not in df.columns for c in ['Latitude', 'Longitude', datecol]]):
-        raise ValueError('Column missing in df; either Latitude, Longitude or date')
+    if any([c not in df.columns for c in ['x', 'y', datecol]]):
+        raise ValueError('Column missing in df; either x, y or date')
 
     #Get index of the pixels closest to each point in df
     print('Getting index of pixels closest to points in df...')
-    df_ij = df.merge(getclosest_ij_df(latv[:], lonv[:], df[['Latitude', 'Longitude']]),
-                     how='left', on=['Latitude', 'Longitude'])
+
+    ################ NEED TO FIGURE OUT BUG GETCLOSEST ############
+    df_ij = df.merge(getclosest_ij_df(
+        X=np.tile(sourcef['x'].values, [sourcef['y'].shape[0], 1]),
+        Y=np.tile(np.transpose(np.asmatrix(sourcef['y'].values[::-1])), [1, sourcef['x'].shape[0]]),
+        XYpt=df[['x', 'y']]),
+        how='left', on=['x', 'y'])
 
     #Convert dates in df to index
     print('Converting dates to index...')
     if df_ij[datecol].dtype.name != 'datetime64[ns]':
         print('First converting {} to date datetime64 format'.format(datecol))
         df_ij[datecol] = dateparser.parse(datecol)
-    df_ij = df_ij.merge(pd.DataFrame({'date_index': range(len(timev[:])),
-                                      datecol: netCDF4.num2date(timev[:], timev.units)}),
+    df_ij = df_ij.merge(pd.DataFrame({'date_index': range(sourcef.dims['time']),
+                                      datecol: sourcef['time'].values}),
                         on=datecol)
 
     #Extract variables
@@ -149,17 +160,18 @@ def extractCDFtoDF(dfcsv, pattern, indir, varname, datecol = None, level=None, o
         if 'level' in sourcef.dimensions:
             level_i = np.where(sourcef.variables['level'][:] == level)[0][0]
             varname = '{0}{1}'.format(varname, level)
-            df_ij[varname] = \
-                df_ij.apply(lambda x: sourcef[x.date_index, level_i, int(x['iy_min']), int(x['ix_min'])], axis=1)
+            # df_ij[varname] = \
+            #     df_ij.apply(lambda x: sourcef[x.date_index, level_i, int(x['iy_min']), int(x['ix_min'])], axis=1)
         else:
             raise ValueError("A 'level' argument was provided but netCDF does not have a level dimension")
     else:
-        df_ij[varname] = \
-            df_ij.apply(lambda x: sourcef[x.date_index, int(x['iy_min']), int(x['ix_min'])], axis=1)
+        df_ij[varname] = (sourcef[varname].isel(time=xr.DataArray(df_ij.date_index, dims='z'),
+                                                x=xr.DataArray(df_ij.ix_min.astype(int), dims='z'),
+                                                y=xr.DataArray(df_ij.iy_min.astype(int), dims='z'))).values
 
     #Delete intermediate columns
     print('Deleting indices columns')
-    df.drop(['iymin','ix_min','date_index'], axis=1)
+    df.drop(['ixmin','iy_min','date_index'], axis=1)
 
     #Write df out
     if (isinstance(dfcsv, str) and os.path.exists(dfcsv)) or (outcsv is not None):
@@ -176,12 +188,12 @@ elems_out = ['monoxide', 'dioxide', 'H', 'C', 'O', 'N', 'S', 'Hydrogen', 'Carbon
 elems_regex = re.compile('|'.join(['\\b{}\\b'.format(e) for e in elems]), re.IGNORECASE)
 elemsout_regex = re.compile('|'.join(['\\b{}\\b'.format(e) for e in elems_out]), re.IGNORECASE)
 #Create list of parameter codes based on https://aqs.epa.gov/aqsweb/documents/codetables/methods_all.html
-paramsel = ['11','12','14','22','65','82','85','86','89']
-param_regex = re.compile('|'.join(['(^{}.*)'.format(p) for p in paramsel]))
-monitors_chem = monitors.loc[(monitors['Parameter Code'].astype(str).str.contains(param_regex)) &
-                             (monitors['Parameter Name'].str.contains(elems_regex)) &
+#paramsel = ['11','12','14','22','65','82','85','86','89']
+#param_regex = re.compile('|'.join(['(^{}.*)'.format(p) for p in paramsel]))
+#(monitors['Parameter Code'].astype(str).str.contains(param_regex)) &
+monitors_chem = monitors.loc[(monitors['Parameter Name'].str.contains(elems_regex)) &
                              ~(monitors['Parameter Name'].str.contains(elemsout_regex)),:]
-#pd.unique(monitors_chem['Parameter Name'])
+
 
 #Pad monitors' codes with 0s to match sites' codes
 pd.unique(monitors_chem['County Code'])
@@ -203,89 +215,7 @@ len(sites_chem)
 len(pd.unique(sites_chem['UID'])) #Most sites are unique
 
 #-----------------------------------------------------------------------------------------------------------------------
-# CREATE POINT SHAPEFILE AND BUFFER
-#-----------------------------------------------------------------------------------------------------------------------
-sites_chem.groupby('Datum')['UID'].nunique() #Check what datums data are in
-
-#Create geodataframes
-def pdtogpd_datum(df, datum):
-    "Subset df based on datum and create Geodataframe with the right assigned datum"
-    crs = {'WGS84': {'init': 'epsg:4326'}, 'NAD27': {'init': 'epsg:4267'},'NAD83': {'init': 'epsg:6318'}} #'NAD83': {'init': 'epsg:1116'}}
-    subdat = df[df['Datum']==datum]
-    geom = [Point(xy) for xy in zip(subdat.Longitude, subdat.Latitude)]
-    return(gpd.GeoDataFrame(subdat, crs=crs[datum], geometry=geom))
-
-sites_wgs84 = pdtogpd_datum(sites_chem, 'WGS84')
-sites_nad27 = pdtogpd_datum(sites_chem, 'NAD27')
-sites_nad83 = pdtogpd_datum(sites_chem, 'NAD83')
-
-sites_chem['Longitude'].describe()
-
-#Project them all to esri projection 102003 - usa contiguous albers equal area conic
-#Spatial reference: http://spatialreference.org/ref/esri/usa-contiguous-albers-equal-area-conic/
-albers = "+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"
-sites_gpd = pd.concat([sites_wgs84.to_crs(albers),sites_nad27.to_crs(albers), sites_nad83.to_crs(albers)])
-#Remove outliers with lon=0
-sites_gpd['Longitude'].describe()
-sites_gpd = sites_gpd[sites_gpd['Longitude'] != 0]
-
-#Create 550 m radius buffers and dissolve them
-sites_buf = sites_gpd['geometry'].buffer(distance=550)
-sites_bufgpd = gpd.GeoDataFrame(sites_buf, crs=albers).rename(columns={0:'geometry'}).set_geometry('geometry')
-
-#Dissolve all
-sites_bufgpd['diss'] = 1
-sites_bufdis = sites_bufgpd.dissolve(by='diss')
-
-#Dissolve only overlapping buffers
-sites_bufunion = gpd.GeoDataFrame([polygon for polygon in sites_bufgpd.unary_union], crs=albers). \
-    rename(columns={0:'geometry'}).set_geometry('geometry')
-
-#Output to shapefile
-sites_gpd.to_file(sites_out, driver = 'ESRI Shapefile')
-sites_bufgpd.to_file(sites_outbuf, driver = 'ESRI Shapefile')
-sites_bufdis.to_file(sites_outbufdis, driver = 'ESRI Shapefile')
-sites_bufunion.to_file(sites_outbufunion, driver = 'ESRI Shapefile')
-
-#-----------------------------------------------------------------------------------------------------------------------
-# DOWNLOAD SPECIATION DATA FOR ALL MONITORING SITES
-#-----------------------------------------------------------------------------------------------------------------------
-yearlist = range(2014, 2020)
-epadl_url = "https://aqs.epa.gov/aqsweb/airdata/"
-spec25_list = [os.path.join(epadl_url, "daily_SPEC_{}.zip".format(year)) for year in yearlist]
-spec10_list = [os.path.join(epadl_url, "daily_PM10SPEC_{}.zip".format(year)) for year in yearlist]
-for file in spec25_list + spec10_list:
-    dlfile(file, outpath=os.path.join(AQIdir))
-
-#Collate all data
-if not os.path.exists(airdat_uniquetab):
-    airdatall = os.path.join(AQIdir, 'daily_SPEC_collate.csv')
-    airdatlist = mergedel(AQIdir, 'daily_.*SPEC.*[.]csv$', airdatall, verbose=True)
-    airdat_df = pd.read_csv(airdatall)
-    airdat_df.shape
-    airdat_df.dtypes
-
-    print('Compute unique ID for each monitoring site...')
-    airdat_df['UID'] = airdat_df['State Code'].astype(str).astype(str) + \
-                       airdat_df['County Code'].astype(str) + \
-                       airdat_df['Site Num'].astype(str)
-
-    print('Compute df of unique UID-time records to extract meteorological variables with...')
-    subcols = ['UID', 'Latitude', 'Longitude', 'Date Local']
-    airdat_unique = pd.unique(
-        airdat_df[subcols].
-            apply(lambda x: '._.'.join(x.astype(str)), axis=1)) #Concatenate columns
-
-    airdat_uniquedf = pd.DataFrame(
-        [i.split('._.') for i in list(airdat_unique)],
-        columns = subcols) #Resplit and format to df
-    airdat_uniquedf['date'] = airdat_uniquedf['Date Local']
-    airdat_uniquedf.to_csv(airdat_uniquetab)
-else:
-    airdat_uniquedf = pd.read_csv(airdat_uniquetab)
-
-#-----------------------------------------------------------------------------------------------------------------------
-# DOWNLOAD DAILY METEOROLOGICAL DATA FOR AQI STATIONS
+# DOWNLOAD DAILY METEOROLOGICAL DATA
 # Get selected covariates from Porter et al. 2015:
 # Investigating the observed sensitivities of air-quality extremes to meteorological drivers via quantile regression
 #-----------------------------------------------------------------------------------------------------------------------
@@ -345,14 +275,102 @@ for var in varfolder_dic:
     else:
         downloadNARR(folder=varfolder_dic[var], variable=var, years=yearlist, outdir=NARRdir)
 
+#Get proj4 from netcdf
+templatef = xr.open_mfdataset(glob.glob(os.path.join(NARRdir, varfolder_dic.keys()[0]+'*')))
+crsatt = templatef.variables['Lambert_Conformal'].attrs
+lcc_proj4 = ("+proj=lcc +lat_1={0} +lat_2={1} +lat_0={2} +lon_0={3} +x_0={4} +y_0={5} +units=m +no_def".
+             format(crsatt['standard_parallel'][0],
+                    crsatt['standard_parallel'][1],
+                    crsatt['latitude_of_projection_origin'],
+                    crsatt['longitude_of_central_meridian'],
+                    crsatt['false_easting'],
+                    crsatt['false_northing']))
+
 #-----------------------------------------------------------------------------------------------------------------------
-# EXTRACT ALL METEOROLOGICAL VARIABLES FOR EACH STATION-DATE COMBINATION
+# CREATE POINT SHAPEFILE AND BUFFER
 #-----------------------------------------------------------------------------------------------------------------------
+sites_chem.groupby('Datum')['UID'].nunique() #Check what datums data are in
+
+#Create geodataframes
+sites_wgs84 = pdtogpd_datum(sites_chem, 'WGS84')
+sites_nad27 = pdtogpd_datum(sites_chem, 'NAD27')
+sites_nad83 = pdtogpd_datum(sites_chem, 'NAD83')
+
+#Project them all to same projection as meteorological data (Lambert Comformal Conic)
+sites_gpd = pd.concat([sites_wgs84.to_crs(crs=lcc_proj4), sites_nad27.to_crs(crs=lcc_proj4), sites_nad83.to_crs(crs=lcc_proj4)])
+sites_gpd['x'], sites_gpd['y'] = sites_gpd.centroid.x, sites_gpd.centroid.y
+#Remove outliers with lon=0
+sites_gpd['Longitude'].describe()
+sites_gpd = sites_gpd[sites_gpd['Longitude'] != 0]
+
+#Create 550 m radius buffers and dissolve them
+sites_buf = sites_gpd['geometry'].buffer(distance=550)
+sites_bufgpd = gpd.GeoDataFrame(sites_buf, crs=lcc_proj4).rename(columns={0:'geometry'}).set_geometry('geometry')
+
+#Dissolve all
+sites_bufgpd['diss'] = 1
+sites_bufdis = sites_bufgpd.dissolve(by='diss')
+
+#Dissolve only overlapping buffers
+sites_bufunion = gpd.GeoDataFrame([polygon for polygon in sites_bufgpd.unary_union], crs=lcc_proj4). \
+    rename(columns={0:'geometry'}).set_geometry('geometry')
+
+#Output to shapefile
+sites_gpd.to_file(sites_out, driver = 'ESRI Shapefile')
+sites_bufgpd.to_file(sites_outbuf, driver = 'ESRI Shapefile')
+sites_bufdis.to_file(sites_outbufdis, driver = 'ESRI Shapefile')
+sites_bufunion.to_file(sites_outbufunion, driver = 'ESRI Shapefile')
+
+#-----------------------------------------------------------------------------------------------------------------------
+# DOWNLOAD SPECIATION DATA FOR ALL MONITORING SITES
+#-----------------------------------------------------------------------------------------------------------------------
+#Download data
+yearlist = range(2014, 2020)
+epadl_url = "https://aqs.epa.gov/aqsweb/airdata/"
+spec25_list = [os.path.join(epadl_url, "daily_SPEC_{}.zip".format(year)) for year in yearlist]
+spec10_list = [os.path.join(epadl_url, "daily_PM10SPEC_{}.zip".format(year)) for year in yearlist]
+for file in spec25_list + spec10_list:
+    dlfile(file, outpath=os.path.join(AQIdir))
+
+#Collate all data
+if not os.path.exists(airdatall):
+    mergedel(AQIdir, 'daily_.*SPEC.*[0-9]{4,6}[.]csv$', airdatall, verbose=True)
+airdat_df = pd.read_csv(airdatall)
+
+#-----------------------------------------------------------------------------------------------------------------------
+# FORMAT AQI DATA
+#-----------------------------------------------------------------------------------------------------------------------
+if not os.path.exists(airdat_uniquetab):
+    print('Compute unique ID for each monitoring site...')
+    airdat_df['UID'] = airdat_df['State Code'].astype(str).str.zfill(2) + \
+                       airdat_df['County Code'].astype(str) + \
+                       airdat_df['Site Num'].astype(str)
+
+    airdat_df[airdat_df['UID']=='01101102']
+    print('Compute df of unique UID-time records to extract meteorological variables with...')
+    subcols = ['UID', 'Latitude', 'Longitude', 'Date Local']
+    airdat_unique = pd.unique(airdat_df[subcols[0]].str.cat(airdat_df[subcols[1:]].astype(str), sep='._.')) #Concatenate columns
+
+    airdat_uniquedf = pd.DataFrame(
+        [i.split('._.') for i in list(airdat_unique)],
+        columns = subcols) #Resplit and format to df
+    #Faster than airdat_unique.str.split("._.", n = 4, expand = True) ?
+    airdat_uniquedf['date'] = airdat_uniquedf['Date Local']
+    airdat_uniquedf.to_csv(airdat_uniquetab)
+else:
+    airdat_uniquedf = pd.read_csv(airdat_uniquetab)
+
+# Get projected x and y coordinates for each site
+airdat_uniquedfproj = airdat_uniquedf.merge(pd.DataFrame(sites_gpd.drop(columns='geometry')), on='UID', how='inner')
+
 #Expand df to extract 3-hourly meteorological averages
-airdat_uniquedfexp = airdat_uniquedf.reindex(airdat_uniquedf.index.repeat(8))
+airdat_uniquedfexp = airdat_uniquedfproj.reindex(airdat_uniquedfproj.index.repeat(8))
 airdat_uniquedfexp['datetime_dupli'] = pd.to_datetime(airdat_uniquedfexp['date'], format='%Y-%m-%d') + \
                                        pd.to_timedelta(airdat_uniquedfexp.groupby(level=0).cumcount()*3, unit='h')
 
+#-----------------------------------------------------------------------------------------------------------------------
+# EXTRACT ALL METEOROLOGICAL VARIABLES FOR EACH STATION-DATE COMBINATION
+#-----------------------------------------------------------------------------------------------------------------------
 #Dictionary of variables to extract
 cdfvardict = {
     'air.2m': ['air.2m*.nc', None],
@@ -388,13 +406,8 @@ sourcef = netCDF4.Dataset(os.path.join(NARRdir, 'air.2m.2016.nc'))
 timev = sourcef.variables['time']
 varname = 'crain'
 
-#https://stackoverflow.com/questions/35281841/importing-and-decoding-dataset-in-xarray-to-avoid-conflicting-fillvalue-and-mis
-sourcef = xr.open_mfdataset(glob.glob(os.path.join(NARRdir, 'crain*.nc')))
-sourcef
-check = sourcef.variables['crain'][:, list(df_ij.iy_min.astype(int)), list(df_ij.ix_min.astype(int))]
 
-
-#-----------------------------------------------------------------------------------------------------------------------
+#------------------------------------------------------------------------------------------------------
 # COMPUTE DERIVED VARIABLES
 #-----------------------------------------------------------------------------------------------------------------------
 cdfvardict.keys()
@@ -404,7 +417,7 @@ covar_pm25
 ##############################################################################################################
 ####################################################################################################################################
 # EXTRA STUFF
-# air2m = netCDF4.Dataset(os.path.join(NARRdir, 'air.2m.2016.nc'))
+air2m = netCDF4.Dataset(os.path.join(NARRdir, 'air.2m.2016.nc'))
 # air2m = netCDF4.Dataset(os.path.join(NARRdir, 'air.2m.2016.nc'))
 # air2m.close()
 # #Check variables
@@ -413,3 +426,4 @@ for a in air2m.variables:
     varobj = air2m.variables[a]
     print(varobj)
 
+air2m.variables['Lambert_Conformal']
