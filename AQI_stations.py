@@ -15,9 +15,9 @@ import timeit
 import glob
 import dateparser
 import xarray as xr
-
 #Custom functions
 from Download_gist import *
+import cPickle as pickle
 
 #Set options
 arcpy.CheckOutExtension("Spatial")
@@ -60,7 +60,8 @@ else:
     arcpy.CreateFileGDB_management(os.path.join(rootdir,'results/airdata'), 'AQI.gdb')
 
 airdatall = os.path.join(AQIdir, 'daily_SPEC_collate.csv')
-airdat_uniquetab = os.path.join(AQIdir, 'daily_SPEC_unique.csv')
+#airdat_uniquetab = os.path.join(AQIdir, 'daily_SPEC_unique.csv')
+airdat_uniquedfexp_pickle =  os.path.join(rootdir, 'results/airdat_uniquedfexp.p')
 
 #Functions
 def pdtogpd_datum(df, datum):
@@ -70,10 +71,9 @@ def pdtogpd_datum(df, datum):
     geom = [Point(xy) for xy in zip(subdat.Longitude, subdat.Latitude)]
     return(gpd.GeoDataFrame(subdat, crs=crs[datum], geometry=geom))
 
-
 def getclosest_ij(X, Y, Xpt, Ypt):
     # find squared distance of every point on grid
-    dist_sq = (X - Xpt) ** 2 + (Y - Ypt) ** 2
+    dist_sq = np.square(X - Xpt) + np.square(Y - Ypt)
     # 1D index of minimum dist_sq element
     minindex_flattened = dist_sq.argmin()
     # Get 2D index for latvals and lonvals arrays from 1D index
@@ -97,86 +97,109 @@ def getclosest_ij_df(X, Y, XYpt):
         else:
             raise ValueError('Wrong number of columns in XYpt')
 
-def extractCDFtoDF(dfcsv, pattern, indir, varname, datecol = None, level=None, outcsv=None):
-    """Warning: will edit source df with extra columns"""
-    pathpattern = os.path.join(indir, pattern)
-    cdflist = glob.glob(pathpattern)
-    print('Extracting {0}'.format(cdflist))
+def extractCDFtoDF(indf, pattern, indir, varname, keepcols=None, datecol = None, level=None, outfile=None, overwrite=False):
+    if not (((outfile != None and os.path.exists(outfile)) or
+             (outfile == None and os.path.exists(indf))) and
+            overwrite == False):
+        """Warning: will edit source df with extra columns"""
+        pathpattern = os.path.join(indir, pattern)
+        cdflist = glob.glob(pathpattern)
+        print('Extracting {0}'.format(cdflist))
 
-    #Get netCDF data
-    try:
-        sourcef = xr.open_mfdataset(cdflist)
-    except Exception as e:
-        traceback.print_exc()
-        if isinstance(e, RuntimeError):
-            for fpath in glob.glob(cdflist):
-                try:
-                    netCDF4.Dataset(fpath)
-                except:
-                    print('Error stems from {}...'.format(fpath))
-                    pass
+        #Get netCDF data
+        try:
+            sourcef = xr.open_mfdataset(cdflist)
+        except Exception as e:
+            traceback.print_exc()
+            if isinstance(e, RuntimeError):
+                for fpath in glob.glob(cdflist):
+                    try:
+                        netCDF4.Dataset(fpath)
+                    except:
+                        print('Error stems from {}...'.format(fpath))
+                        pass
 
-    #Print dimensions and their length
-    print('Dimensions:')
-    for dim in sourcef.dims:
-        print('{0}, length: {1}'.format(dim, sourcef.dims[dim]))
+        #Print dimensions and their length
+        print('Dimensions:')
+        for dim in sourcef.dims:
+            print('{0}, length: {1}'.format(dim, sourcef.dims[dim]))
 
-    #If supplied path to csv, read csv as df
-    if isinstance(dfcsv, str) and os.path.exists(dfcsv):
-        df = pd.read_csv(dfcsv)
-    elif isinstance(dfcsv, pd.DataFrame):
-        df = dfcsv
-    else:
-        raise ValueError('Input df argument neither csv nor dataframe ')
-
-    #Make sure that right columns are in df
-    if datecol is None:
-        datecol = 'date'
-    if any([c not in df.columns for c in ['x', 'y', datecol]]):
-        raise ValueError('Column missing in df; either x, y or date')
-
-    #Get index of the pixels closest to each point in df
-    print('Getting index of pixels closest to points in df...')
-
-    ################ NEED TO FIGURE OUT BUG GETCLOSEST ############
-    df_ij = df.merge(getclosest_ij_df(
-        X=np.tile(sourcef['x'].values, [sourcef['y'].shape[0], 1]),
-        Y=np.tile(np.transpose(np.asmatrix(sourcef['y'].values[::-1])), [1, sourcef['x'].shape[0]]),
-        XYpt=df[['x', 'y']]),
-        how='left', on=['x', 'y'])
-
-    #Convert dates in df to index
-    print('Converting dates to index...')
-    if df_ij[datecol].dtype.name != 'datetime64[ns]':
-        print('First converting {} to date datetime64 format'.format(datecol))
-        df_ij[datecol] = dateparser.parse(datecol)
-    df_ij = df_ij.merge(pd.DataFrame({'date_index': range(sourcef.dims['time']),
-                                      datecol: sourcef['time'].values}),
-                        on=datecol)
-
-    #Extract variables
-    print('Extracting variable...')
-    if level is not None:
-        if 'level' in sourcef.dimensions:
-            level_i = np.where(sourcef.variables['level'][:] == level)[0][0]
-            varname = '{0}{1}'.format(varname, level)
-            # df_ij[varname] = \
-            #     df_ij.apply(lambda x: sourcef[x.date_index, level_i, int(x['iy_min']), int(x['ix_min'])], axis=1)
+        #If supplied path to csv, read csv as df
+        if isinstance(indf, str) and os.path.exists(indf):
+            if os.path.splitext(indf)[1] == '.csv':
+                df = pd.read_csv(indf)
+            elif os.path.splitext(indf)[1] == '.p':
+                df = pickle.load(open(indf, "rb"))
+            #Could use .feather too
+            # elif os.path.splitext(indf)[1] == '.feather':
+            #     df = pd.read_feather(indf)
+            else:
+                raise ValueError('Input df argument unknown format, only pd dfs, .csv and .p are supported')
+        elif isinstance(indf, pd.DataFrame):
+            df = indf
         else:
-            raise ValueError("A 'level' argument was provided but netCDF does not have a level dimension")
+            raise ValueError('Input df argument neither csv nor dataframe ')
+
+        #Make sure that right columns are in df
+        if datecol is None:
+            datecol = 'date'
+        if any([c not in df.columns for c in ['x', 'y', datecol]]):
+            raise ValueError('Column missing in df; either x, y or date')
+
+        #Get index of the pixels closest to each point in df
+        print('Getting index of pixels closest to points in df...')
+
+        df_ij = df.merge(getclosest_ij_df(
+            X=np.tile(sourcef['x'].values, [sourcef['y'].shape[0], 1]),
+            Y=np.tile(np.transpose(np.asmatrix(sourcef['y'].values[::-1])), [1, sourcef['x'].shape[0]]),
+            XYpt=df[['x', 'y']]),
+            how='left', on=['x', 'y'])
+
+        #Convert dates in df to index
+        print('Converting dates to index...')
+        if df_ij[datecol].dtype.name != 'datetime64[ns]':
+            print('First converting {} to date datetime64 format'.format(datecol))
+            df_ij[datecol] = dateparser.parse(datecol)
+        df_ij = df_ij.merge(pd.DataFrame({'date_index': range(sourcef.dims['time']),
+                                          datecol: sourcef['time'].values}),
+                            on=datecol)
+
+        #Extract variables
+        print('Extracting variable...')
+        if level is not None:
+            if 'level' in sourcef.dimensions:
+                level_i = np.where(sourcef.variables['level'][:] == level)[0][0]
+                varname = '{0}{1}'.format(varname, level)
+                df_ij[varname] = (sourcef[varname].isel(time=xr.DataArray(df_ij.date_index, dims='z'),
+                                                        x=xr.DataArray(df_ij.ix_min.astype(int), dims='z'),
+                                                        y=xr.DataArray(df_ij.iy_min.astype(int), dims='z'),
+                                                        level=level_i)).values
+            else:
+                raise ValueError("A 'level' argument was provided but netCDF does not have a level dimension")
+        else:
+            df_ij[varname] = (sourcef[varname].isel(time=xr.DataArray(df_ij.date_index, dims='z'),
+                                                    x=xr.DataArray(df_ij.ix_min.astype(int), dims='z'),
+                                                    y=xr.DataArray(df_ij.iy_min.astype(int), dims='z'))).values
+
+        #Delete intermediate columns
+        print('Deleting indices columns')
+        df_ij.drop(['ix_min','iy_min','date_index'], axis=1, inplace=True)
+        if keepcols is not None:
+            df_ij.drop([c for c in df_ij.columns if c not in keepcols + list(varname)], axis=1, inplace=True)
+
+        #Write df out
+        if (isinstance(indf, str) and os.path.exists(indf)) or (outfile is not None):
+            print('Writing df out...')
+            outf = indf if outcsv is None else outfile
+            if os.path.splitext(outf)[1] == '.csv':
+                df_ij.to_csv(outf, sep='\t', encoding = 'utf-8')
+            elif os.path.splitext(outf)[1] == '.p':
+                pickle.dump(df_ij, open(outf, "wb" ))
+            # elif os.path.splitext(outfile)[1] == '.feather':
+            #     df_ij.to_feather(outfile)
     else:
-        df_ij[varname] = (sourcef[varname].isel(time=xr.DataArray(df_ij.date_index, dims='z'),
-                                                x=xr.DataArray(df_ij.ix_min.astype(int), dims='z'),
-                                                y=xr.DataArray(df_ij.iy_min.astype(int), dims='z'))).values
-
-    #Delete intermediate columns
-    print('Deleting indices columns')
-    df.drop(['ixmin','iy_min','date_index'], axis=1)
-
-    #Write df out
-    if (isinstance(dfcsv, str) and os.path.exists(dfcsv)) or (outcsv is not None):
-        print('Writing df out...')
-        df_ij.to_csv(dfcsv if outcsv is None else outcsv)
+        raise ValueError('{} already exists and overwrite==False, '
+                         'either set overwrite==True or change outfile'.format(outfile))
 
 #-----------------------------------------------------------------------------------------------------------------------
 # SELECT SITES THAT RECORD CHEMICAL CONCENTRATIONS
@@ -340,7 +363,7 @@ airdat_df = pd.read_csv(airdatall)
 #-----------------------------------------------------------------------------------------------------------------------
 # FORMAT AQI DATA
 #-----------------------------------------------------------------------------------------------------------------------
-if not os.path.exists(airdat_uniquetab):
+if not os.path.exists(airdat_uniquedfexp_pickle):
     print('Compute unique ID for each monitoring site...')
     airdat_df['UID'] = airdat_df['State Code'].astype(str).str.zfill(2) + \
                        airdat_df['County Code'].astype(str) + \
@@ -356,17 +379,18 @@ if not os.path.exists(airdat_uniquetab):
         columns = subcols) #Resplit and format to df
     #Faster than airdat_unique.str.split("._.", n = 4, expand = True) ?
     airdat_uniquedf['date'] = airdat_uniquedf['Date Local']
-    airdat_uniquedf.to_csv(airdat_uniquetab)
+
+    # Get projected x and y coordinates for each site
+    airdat_uniquedfproj = airdat_uniquedf.merge(pd.DataFrame(sites_gpd.drop(columns='geometry')), on='UID', how='inner')
+
+    # Expand df to extract 3-hourly meteorological averages
+    airdat_uniquedfexp = airdat_uniquedfproj.reindex(airdat_uniquedfproj.index.repeat(8))
+    airdat_uniquedfexp['datetime_dupli'] = pd.to_datetime(airdat_uniquedfexp['date'], format='%Y-%m-%d') + \
+                                           pd.to_timedelta(airdat_uniquedfexp.groupby(level=0).cumcount() * 3, unit='h')
+
+    pickle.dump(airdat_uniquedfexp, open(airdat_uniquedfexp_pickle, "wb"))
 else:
-    airdat_uniquedf = pd.read_csv(airdat_uniquetab)
-
-# Get projected x and y coordinates for each site
-airdat_uniquedfproj = airdat_uniquedf.merge(pd.DataFrame(sites_gpd.drop(columns='geometry')), on='UID', how='inner')
-
-#Expand df to extract 3-hourly meteorological averages
-airdat_uniquedfexp = airdat_uniquedfproj.reindex(airdat_uniquedfproj.index.repeat(8))
-airdat_uniquedfexp['datetime_dupli'] = pd.to_datetime(airdat_uniquedfexp['date'], format='%Y-%m-%d') + \
-                                       pd.to_timedelta(airdat_uniquedfexp.groupby(level=0).cumcount()*3, unit='h')
+    airdat_uniquedfexp = pickle.load(open(airdat_uniquedfexp_pickle, "rb"))
 
 #-----------------------------------------------------------------------------------------------------------------------
 # EXTRACT ALL METEOROLOGICAL VARIABLES FOR EACH STATION-DATE COMBINATION
@@ -390,21 +414,19 @@ cdfvardict = {
 
 #Iterate through variables to extract
 for var in cdfvardict.keys():
-    extractCDFtoDF(airdat_uniquedfexp, pattern= cdfvardict[var][0], indir=NARRdir, varname= var,
-                   datecol = 'datetime_dupli', level=cdfvardict[var][1],
-                   outcsv=os.path.join(rootdir, 'results/daily_SPEC_{}.csv'.format(var.replace('.', '_'))))
+    try:
+        print('Processing {}...'.format(var))
+        extractCDFtoDF(airdat_uniquedfexp_pickle, pattern= cdfvardict[var][0], indir=NARRdir, varname= var,
+                       datecol = 'datetime_dupli', level=cdfvardict[var][1],
+                       keepcols = ['UID', 'datetime_dupli', 'x', 'y'], overwrite=False,
+                       outfile= os.path.join(rootdir, 'results/daily_SPEC_{}.p'.format(var.replace('.', '_'))))
+    except Exception:
+        traceback.print_exc()
+        print('Skipping...')
+        pass
 
 #Extract data
-extractCDFtoDF(airdat_uniquedfexp, pattern='crain.*.nc', indir=NARRdir, varname='crain',
-               datecol = 'datetime_dupli', level=None, outcsv=os.path.join(rootdir, 'results/daily_SPEC_crain.csv'))
 
-
-################# WORKING
-df = airdat_uniquedfexp
-datecol = 'datetime_dupli'
-sourcef = netCDF4.Dataset(os.path.join(NARRdir, 'air.2m.2016.nc'))
-timev = sourcef.variables['time']
-varname = 'crain'
 
 
 #------------------------------------------------------------------------------------------------------
