@@ -2,7 +2,6 @@ import arcpy
 import mendeleev
 import pandas as pd
 import itertools
-from arcpy.sa import *
 import os
 import re
 import geopandas as gpd
@@ -11,13 +10,14 @@ import us
 import numpy as np
 import netCDF4
 from datetime import datetime, timedelta
-import timeit
+import time
 import glob
 import dateparser
 import xarray as xr
 #Custom functions
 from Download_gist import *
 import cPickle as pickle
+from xarrayDataAssembly import *
 
 #Set options
 arcpy.CheckOutExtension("Spatial")
@@ -30,6 +30,10 @@ AQIdir = os.path.join(rootdir, 'data/EPA_AirData_201902')
 NARRdir = os.path.join(rootdir, 'data/NARR_201904')
 if not os.path.isdir(NARRdir):
     os.mkdir(NARRdir)
+NARRoutdir = os.path.join(rootdir, 'results/NARR')
+if not os.path.isdir(NARRoutdir):
+    os.mkdir(NARRoutdir)
+
 
 #Import variables
 monitortab = os.path.join(AQIdir, 'aqs_monitors.csv')
@@ -97,11 +101,30 @@ def getclosest_ij_df(X, Y, XYpt):
         else:
             raise ValueError('Wrong number of columns in XYpt')
 
+def subsetNARRlevel(indir, pattern, sel_level, outnc):
+    pathpattern = os.path.join(indir, pattern)
+    cdflist = glob.glob(pathpattern)
+    print('Extracting {0}'.format(cdflist))
+
+    try:
+        sourcef = xr.open_mfdataset(cdflist)
+    except Exception as e:
+        traceback.print_exc()
+        if isinstance(e, RuntimeError):
+            for fpath in cdflist:
+                try:
+                    netCDF4.Dataset(fpath)
+                except:
+                    print('Error stems from {}...'.format(fpath))
+                    pass
+
+    #level_i = np.where(sourcef['level'] == level)[0][0]
+    sourcef.sel(level=sel_level).to_netcdf(outnc)
+
 def extractCDFtoDF(indf, pattern, indir, varname, keepcols=None, datecol = None, level=None, outfile=None, overwrite=False):
     if not (((outfile != None and os.path.exists(outfile)) or
              (outfile == None and os.path.exists(indf))) and
             overwrite == False):
-        """Warning: will edit source df with extra columns"""
         pathpattern = os.path.join(indir, pattern)
         cdflist = glob.glob(pathpattern)
         print('Extracting {0}'.format(cdflist))
@@ -112,7 +135,7 @@ def extractCDFtoDF(indf, pattern, indir, varname, keepcols=None, datecol = None,
         except Exception as e:
             traceback.print_exc()
             if isinstance(e, RuntimeError):
-                for fpath in glob.glob(cdflist):
+                for fpath in cdflist:
                     try:
                         netCDF4.Dataset(fpath)
                     except:
@@ -167,19 +190,20 @@ def extractCDFtoDF(indf, pattern, indir, varname, keepcols=None, datecol = None,
         #Extract variables
         print('Extracting variable...')
         if level is not None:
-            if 'level' in sourcef.dimensions:
-                level_i = np.where(sourcef.variables['level'][:] == level)[0][0]
-                varname = '{0}{1}'.format(varname, level)
-                df_ij[varname] = (sourcef[varname].isel(time=xr.DataArray(df_ij.date_index, dims='z'),
-                                                        x=xr.DataArray(df_ij.ix_min.astype(int), dims='z'),
-                                                        y=xr.DataArray(df_ij.iy_min.astype(int), dims='z'),
-                                                        level=level_i)).values
+            if 'level' in sourcef.dims:
+                level_i = np.where(sourcef['level'] == level)[0][0]
+                df_ij[varname] = (sourcef[varname.split('_')[0]].isel(
+                    time=xr.DataArray(df_ij.date_index, dims='z'),
+                    x=xr.DataArray(df_ij.ix_min.astype(int), dims='z'),
+                    y=xr.DataArray(df_ij.iy_min.astype(int), dims='z'),
+                    level=level_i)).values
             else:
                 raise ValueError("A 'level' argument was provided but netCDF does not have a level dimension")
         else:
-            df_ij[varname] = (sourcef[varname].isel(time=xr.DataArray(df_ij.date_index, dims='z'),
-                                                    x=xr.DataArray(df_ij.ix_min.astype(int), dims='z'),
-                                                    y=xr.DataArray(df_ij.iy_min.astype(int), dims='z'))).values
+            df_ij[varname] = (sourcef[varname.split('_')[0]].isel(
+                time=xr.DataArray(df_ij.date_index, dims='z'),
+                x=xr.DataArray(df_ij.ix_min.astype(int), dims='z'),
+                y=xr.DataArray(df_ij.iy_min.astype(int), dims='z'))).values
 
         #Delete intermediate columns
         print('Deleting indices columns')
@@ -190,7 +214,7 @@ def extractCDFtoDF(indf, pattern, indir, varname, keepcols=None, datecol = None,
         #Write df out
         if (isinstance(indf, str) and os.path.exists(indf)) or (outfile is not None):
             print('Writing df out...')
-            outf = indf if outcsv is None else outfile
+            outf = indf if outfile is None else outfile
             if os.path.splitext(outf)[1] == '.csv':
                 df_ij.to_csv(outf, sep='\t', encoding = 'utf-8')
             elif os.path.splitext(outf)[1] == '.p':
@@ -392,31 +416,169 @@ if not os.path.exists(airdat_uniquedfexp_pickle):
 else:
     airdat_uniquedfexp = pickle.load(open(airdat_uniquedfexp_pickle, "rb"))
 
+
+#------------------------------------------------------------------------------------------------------
+# COMPUTE DERIVED VARIABLES
+#-----------------------------------------------------------------------------------------------------------------------
+covar_pm25
+
+#Get fired data
+#Porter et al. 2015 used: MODIS Global Monthly Fire Location Product
+#https://www.ospo.noaa.gov/Products/land/hms.html
+#https://satepsanone.nesdis.noaa.gov/pub/FIRE/HMS/GIS/ARCHIVE/
+#https://www.ospo.noaa.gov/Products/land/fire.html: try ASDTA Smoke-East AOD and ASDTA Smoke-West AOD
+
+#Data request:
+#https://www.ncdc.noaa.gov/has/has.dsselect
+#GOES-13, SMOKEE_GRD 2014/01/01 - 2018/08/01;
+#       Check status at: https://www.ncdc.noaa.gov/has/HAS.CheckOrderStatus?hasreqid=HAS011301876&emailadd=messamat@uw.edu
+#       Delivery Location: http://www1.ncdc.noaa.gov/pub/has/HAS011301876/
+#GOES-15, SMOKEW_GRD 2014/01/01 - 2019/04/17
+#       Check status at: https://www.ncdc.noaa.gov/has/HAS.CheckOrderStatus?hasreqid=HAS011301886&emailadd=messamat@uw.edu
+#       Delivery location: http://www1.ncdc.noaa.gov/pub/has/HAS011301886/
+
+#-------------- subset datasets by pressure level
+subsetNARRlevel(indir=NARRdir, pattern = 'hgt.*.nc', sel_level = 850, outnc = os.path.join(NARRoutdir, 'hgt.850.nc'))
+subsetNARRlevel(indir=NARRdir, pattern = 'vwnd.2*.nc', sel_level = 500, outnc = os.path.join(NARRoutdir, 'vwnd.500.nc'))
+
+#-------------- Generate 9x9 mean -----------------#
+#crain_9x9
+for yeardat in glob.glob(os.path.join(NARRdir, 'crain.*.nc')):
+    print('Processing {}...'.format(yeardat))
+    outdat = os.path.join(NARRoutdir, os.path.splitext(os.path.split(yeardat)[1])[0]+'_9x9.nc')
+    if not os.path.exists(outdat):
+        crainf = xr.open_dataset(yeardat, chunks={'time': 10})
+        crainroll = crainf['crain'].rolling(y=9, center=True).mean().rolling(x=9, center=True).mean()
+        crainroll.to_netcdf(outdat)
+    else:
+        print('{} already exists, skipping...'.format(outdat))
+
+#air.sfc 9x9
+for yeardat in glob.glob(os.path.join(NARRdir, 'air.sfc*.nc')):
+    print('Processing {}...'.format(yeardat))
+    outdat = os.path.join(NARRoutdir, os.path.splitext(os.path.split(yeardat)[1])[0]+'_9x9.nc')
+    if not os.path.exists(outdat):
+        crainf = xr.open_dataset(yeardat, chunks={'time': 10})
+        crainroll = crainf['air'].rolling(y=9, center=True).mean().rolling(x=9, center=True).mean()
+        crainroll.to_netcdf(outdat)
+    else:
+        print('{} already exists, skipping...'.format(outdat))
+
+#-------------- Compute day and night extrema -----------------#
+arr = xr.open_dataset(os.path.join(NARRdir, 'air.sfc.2015.nc'))
+#Add 8h to datetime so that e.g. 02/01 16h-02/02 8h is 02/02 00*02/02 16h (preceding night is now consider part of that date
+arr['shifted_datetime'] = arr['time'].values + pd.to_timedelta(timedelta(hours=8))
+arr['shifted_date'] = arr.shifted_datetime.dt.floor('d')
+#Assign night vs day
+arr.coords['daynight'] = xr.where(arr.time.dt.hour.isin(range(0,17)), 'night', 'day')
+arr.coords['dateperiod'] = pd.Series(np.datetime_as_string(arr.shifted_date.values)).str[0:10] + arr.daynight.values
+
+#Add dateperiod dimension (https://stackoverflow.com/questions/39626402/add-dimension-to-an-xarray-dataarray)
+#Stack over x, y, dateperiod
+#Get groupby.mean
+#unstack
+
+
+stackedarr = arr.stack(allpoints=['x', 'y'])
+# define a function to compute a linear trend of a timeseries
+def meandateperiod(x):
+    pf = np.polyfit(x.time, x, 1)
+    # we need to return a dataarray or else xarray's groupby won't be happy
+    return xr.DataArray(pf[0])
+tic=time.time()
+trend = stackedarr.groupby('allpoints').apply(linear_trend)
+print(time.time() - tic)
+
+#arr.expand_dims(dim='dateperiod')
+
+
+
+
+
+tic=time.time()
+arr_periodmean = arr.groupby('dateperiod').mean()
+print(time.time() - tic)
+
+
+
+
+tic=time.time()
+results = []
+for label1, group1 in arr.groupby('shifted_date'):
+    for label2, group2, in group1.groupby('daynight'):
+        results.append(group2.mean())
+xr.concat(results, dim=['shifted_date','daynight'])
+print(time.time() - tic)
+
+
+
+
+
+arr = xr.DataArray(np.arange(0, 625, 1).reshape(25, 25),dims=('x', 'y'))
+r= arr.rolling(y=3)
+r.mean(skipna=True)
+for label, arr_window in r:
+    print(arr_window+1)
+
+
+
+#get mean, min, max groupby('date', 'dperiod')
+
+
+
+
+#air.sfc_9x9 - nightmin
+#crain_9x9 - nightmax
+#lts_daymin
+#uwnddir.10m - daymean
+#uwnddir.19m_nightmean
+#vwnd.500 - daymax
+#wspd.10m-daymax
+#wspd.10m-nightmax
+#dswrf-daymin
+#lftx4-nightmin
+#shum.2m-nightmin
+
+
+#Compute 3- and 6-day maxima, minima, and means
+
+#Compute 1-day delta variable
+
+
+
+#Compute daily recirculation potential index (RPI)
+"surface wind speeds based on the ratio between the vector sum magnitude (L) and scalar sum (S) of wind speeds over the" \
+"previous 24 h (Levy et al., 2009)"
+
+#Compute lower-tropospheric stability (LTS)
+# difference between surface and 700 hPa potential temperatures
+
+
 #-----------------------------------------------------------------------------------------------------------------------
 # EXTRACT ALL METEOROLOGICAL VARIABLES FOR EACH STATION-DATE COMBINATION
 #-----------------------------------------------------------------------------------------------------------------------
-#Dictionary of variables to extract
+#Dictionary of variables to extract (do not rely on level argument for hgt and vwnd as netcdfs are too big and saturate memory_
 cdfvardict = {
-    'air.2m': ['air.2m*.nc', None],
-    'air.sfc': ['air.sfc*.nc', None],
+    'air_2m': ['air.2m*.nc', None],
+    'air_sfc': ['air.sfc*.nc', None],
     'crain': ['crain.*.nc', None],
     'dswrf': ['dswrf.*.nc', None],
-    'hgt.850': ['hgt.*.nc', 850],
+    'hgt_850': ['hgt.850*.nc', None],
     'hpbl': ['hpbl.*.nc', None],
     'lftx4': ['lftx4.*.nc', None],
-    'pres.sfc': ['pres.sfc.*.nc', None],
-    'rhum.2m': ['rhum.2m.*.nc', None],
-    'shum.2m': ['shum.2m.*.nc', None],
-    'uwnd.10m': ['uwnd.10m.*.nc', None],
-    'vwnd.10m': ['vwnd.10m.*.nc', None],
-    'vwnd.500': ['vwnd.2*.nc', 500]
+    'pres_sfc': ['pres.sfc.*.nc', None],
+    'rhum_2m': ['rhum.2m.*.nc', None],
+    'shum_2m': ['shum.2m.*.nc', None],
+    'uwnd_10m': ['uwnd.10m.*.nc', None],
+    'vwnd_10m': ['vwnd.10m.*.nc', None],
+    'vwnd_500': ['vwnd.500*.nc', None]
 }
 
 #Iterate through variables to extract
 for var in cdfvardict.keys():
     try:
         print('Processing {}...'.format(var))
-        extractCDFtoDF(airdat_uniquedfexp_pickle, pattern= cdfvardict[var][0], indir=NARRdir, varname= var,
+        extractCDFtoDF(indf = airdat_uniquedfexp_pickle, pattern= cdfvardict[var][0], indir=NARRdir, varname=var,
                        datecol = 'datetime_dupli', level=cdfvardict[var][1],
                        keepcols = ['UID', 'datetime_dupli', 'x', 'y'], overwrite=False,
                        outfile= os.path.join(rootdir, 'results/daily_SPEC_{}.p'.format(var.replace('.', '_'))))
@@ -425,15 +587,13 @@ for var in cdfvardict.keys():
         print('Skipping...')
         pass
 
-#Extract data
+for var in ['vwnd_500', 'hgt_850']:
+    print('Processing {}...'.format(var))
+    extractCDFtoDF(indf=airdat_uniquedfexp_pickle, pattern=cdfvardict[var][0], indir=NARRoutdir, varname=var,
+                   datecol='datetime_dupli', level=cdfvardict[var][1],
+                   keepcols=['UID', 'datetime_dupli', 'x', 'y'], overwrite=False,
+                   outfile=os.path.join(rootdir, 'results/daily_SPEC_{}.p'.format(var.replace('.', '_'))))
 
-
-
-#------------------------------------------------------------------------------------------------------
-# COMPUTE DERIVED VARIABLES
-#-----------------------------------------------------------------------------------------------------------------------
-cdfvardict.keys()
-covar_pm25
 
 
 ##############################################################################################################
