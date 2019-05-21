@@ -43,7 +43,8 @@ AQIgdb = os.path.join(rootdir, 'results/airdata/AQI.gdb')
 NED19proj = os.path.join(rootdir, 'results/ned19_psproj')
 NED13proj = os.path.join(rootdir, 'results/ned13_psproj')
 
-XRFsites = os.path.join(rootdir, 'data/field_data/sampling_sites_edit_select.shp')
+XRFsites = os.path.join(rootdir, 'data/field_data/sampling_sites_edit.shp')
+Binggdb = os.path.join(rootdir, 'results/bing/postprocess.gdb')
 
 NLCD_reclass = os.path.join(rootdir, 'results/LU.gdb/NLCD_reclass_final')
 NLCD_imp = os.path.join(rootdir, 'data/nlcd_2011_impervious_2011_edition_2014_10_10/nlcd_2011_impervious_2011_edition_2014_10_10.img') #Zipped
@@ -98,6 +99,7 @@ NTMproj = os.path.join(rootdir, 'results/NTM.gdb/NTM_routes_selproj')
 NTMsplitdiss = NTMproj + '_splitv_diss'
 NTMras = os.path.join(rootdir, 'results/transit.gdb/NTMras')
 
+transitgdb = os.path.join(rootdir, 'results/transit.gdb')
 soundtransit = os.path.join(rootdir, 'results/transit.gdb/SoundTransit')
 PStransit = os.path.join(rootdir, 'results/transit.gdb/PStransit')
 PStransitbus = PStransit + '_busroutes'
@@ -107,6 +109,11 @@ PStransitras = os.path.join(rootdir, 'results/transit.gdb/PStransit_ras')
 
 if not arcpy.Exists(usdotgdb):
     arcpy.CreateFileGDB_management(resdir, out_name = 'usdot')
+
+PSgdb = os.path.join(rootdir, 'results/PSpredictions.gdb')
+XRFsites_proj = os.path.join(PSgdb, 'XRFsites_proj')
+XRFsites_projUTM = os.path.join(PSgdb, 'XRFsites_projUTM')
+XRFsites_projattri = os.path.join(PSgdb, 'XRFsites_projallattri')
 
 ########################################################################################################################
 # COMPUTE FUNCTIONAL-CLASS BASED AADT AVERAGE FOR EVERY STATE
@@ -520,15 +527,14 @@ ExplodeOverlappingLines(NTMsplitdiss, tolerance)
 #For each set of non-overlapping lines, create its own raster
 tilef = 'expl'
 tilelist = list(set([row[0] for row in arcpy.da.SearchCursor(NTMsplitdiss, [tilef])]))
-outras_base = os.path.join(rootdir, 'results/NTM.gdb/transitnum_')
+outras_base = os.path.join(rootdir, 'results/transitnum')
 arcpy.env.snapRaster = template_ras
 
 for tile in tilelist:
     outras = outras_base + str(tile)
     if not arcpy.Exists(outras):
-        selexpr = '{0} = {1}'.format(tilef, tile)
-        if not arcpy.Exists(outras):
-
+        try:
+            selexpr = '{0} = {1}'.format(tilef, tile)
             #Delete intermediate stuff from previous iteration
             try:
                 arcpy.Delete_management('transit_lyr')
@@ -545,14 +551,27 @@ for tile in tilelist:
             #Rasterize
             print(selexpr)
             arcpy.MakeFeatureLayer_management(NTMsplitdiss, 'transit_lyr', where_clause= selexpr)
-            arcpy.PolylineToRaster_conversion('transit_lyr', value_field='SUM_NTM_routes_selproj_split_adjustnum_int',
+            tmplyr = os.path.join(tmpdir, 'transit{}.shp'.format(tile))
+            arcpy.CopyFeatures_management('transit_lyr', tmplyr)
+            arcpy.PolylineToRaster_conversion(tmplyr, value_field='SUM_NTM_routes_selproj_split_adjustnum_int'[0:10],
                                               out_rasterdataset=outras, cellsize=res)
+        except:
+            traceback.print_exc()
+            try:
+                if arcpy.Exists(tmplyr):
+                    arcpy.Delete_management(tmplyr)
+                os.rmdir(tmpdir)
 
-            #Remove intermediate products
-            print('Deleting scratch workspace...')
-            os.rmdir(tmpdir)
-        else:
-            print('{} already exists...'.format(outras))
+            except:
+                pass
+
+        #Remove intermediate products
+        print('Deleting scratch workspace...')
+        arcpy.Delete_management(tmplyr)
+        os.rmdir(tmpdir)
+
+    else:
+        print('{} already exists...'.format(outras))
 
 #Mosaic to new raster
 arcpy.env.workspace = os.path.split(outras_base)[0]
@@ -721,7 +740,11 @@ arcpy.PolylineToRaster_conversion(hpms_sub, value_field='spdl_filled', out_raste
 customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=os.path.join(pollutgdb, 'hpmssubspdl'),
               out_gdb=pollutgdb, out_var='subspdl', divnum=100, keyw='(pow|log)(([1235]00)|50)(_[123])*', verbose=True)
 
-#Public transit (
+#Public transit
+arcpy.env.extent = hpms_sub
+customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=PStransitras,
+              out_gdb=transitgdb, out_var='bustransit', divnum=100,
+              keyw='(pow|log)[1235]00(_[123])*', verbose=True)
 
 #Road gradient
 arcpy.PolylineToRaster_conversion(hpms_sub, value_field='gradient', out_rasterdataset='hpmssubslope',
@@ -730,3 +753,52 @@ customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=os.pat
               out_gdb=pollutgdb, out_var='subslope', divnum=0.01, keyw='(pow|log)(([1235]00)|50)(_[123])*', verbose=True)
 
 #Bing
+
+
+########################################################################################################################
+# GET TREES HEATMAP VALUES
+# Select candidate species of trees from the City of Seattle's street-tree dataset and extract heatmap values at their
+# location
+########################################################################################################################
+#Get heat values for all trees
+def Iter_ListRaster(workspaces, wildcard):
+    "Build list of all rasters in list of workspaces that correspond to a wildcard"
+    outlist = []
+    for ws in workspaces:
+        arcpy.env.workspace = ws
+        rlist = arcpy.ListRasters(wildcard)
+        if rlist is not None:
+            outlist.extend([os.path.join(ws, r) for r in rlist if os.path.join(ws, r) not in outlist])
+    arcpy.ClearEnvironment('Workspace')
+    return outlist
+
+heatlist_webmercator = Iter_ListRaster([pollutgdb], 'heat*')
+heatlist_UTM = Iter_ListRaster([Binggdb, transitgdb], 'heat*') + [NLCD_imp_PS, NLCD_imp_PS + '_mean.tif']
+
+
+#Project
+arcpy.Project_management(XRFsites, XRFsites_proj, heatlist_webmercator[0])
+arcpy.Project_management(XRFsites, XRFsites_projUTM, UTM10)
+
+#Extract values
+arcpy.env.qualifiedFieldNames = False
+ExtractMultiValuesToPoints(XRFsites_proj, heatlist_webmercator, bilinear_interpolate_values='BILINEAR')
+ExtractMultiValuesToPoints(XRFsites_projUTM, heatlist_UTM, bilinear_interpolate_values='BILINEAR')
+ExtractMultiValuesToPoints(XRFsites_projUTM, NLCD_reclass_PS, bilinear_interpolate_values='NONE')
+arcpy.AddGeometryAttributes_management(XRFsites_proj, 'POINT_X_Y_Z_M', Coordinate_System= arcpy.SpatialReference(4326))
+
+arcpy.AddField_management(XRFsites_proj, 'SiteIDPair', field_type='TEXT')
+arcpy.CalculateField_management(XRFsites_proj, 'SiteIDPair', expression='!F_!+!Pair!', expression_type='PYTHON')
+arcpy.AddField_management(XRFsites_projUTM, 'SiteIDPair', field_type='TEXT')
+arcpy.CalculateField_management(XRFsites_projUTM, 'SiteIDPair', expression='!F_!+!Pair!', expression_type='PYTHON')
+
+arcpy.MakeFeatureLayer_management(XRFsites_proj, 'xrfsiteslyr')
+arcpy.AddJoin_management('xrfsiteslyr', 'SiteIDPair', XRFsites_projUTM, 'SiteIDPair')
+arcpy.CopyFeatures_management('xrfsiteslyr', XRFsites_projattri)
+
+# #Get zoning
+# arcpy.Project_management(zoning, 'zoning_proj', UTM10)
+# arcpy.SpatialJoin_analysis('trees_proj', 'zoning_proj', 'trees_zoning', join_operation='JOIN_ONE_TO_ONE', match_option='WITHIN')
+# #Get census data
+# arcpy.Project_management(censustract, 'Tract_2010Census_proj', UTM10)
+# arcpy.SpatialJoin_analysis('trees_zoning', 'Tract_2010Census_proj', 'trees_zoning_census', join_operation='JOIN_ONE_TO_ONE', match_option='WITHIN')
