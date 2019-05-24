@@ -115,6 +115,15 @@ XRFsites_proj = os.path.join(PSgdb, 'XRFsites_proj')
 XRFsites_projUTM = os.path.join(PSgdb, 'XRFsites_projUTM')
 XRFsites_projattri = os.path.join(PSgdb, 'XRFsites_projallattri')
 
+#Get buffer around AQI sites
+AQIsites_bufunion = os.path.join(rootdir, 'results/airdata/airsites_600bufunion.shp')
+AQIgdb = os.path.join(rootdir, 'results/airdata/AQI.gdb')
+#Create gdb for analysis
+if arcpy.Exists(AQIgdb):
+    print('Geodatabase already exists')
+else:
+    arcpy.CreateFileGDB_management(os.path.join(rootdir,'results/airdata'), 'AQI.gdb')
+
 ########################################################################################################################
 # COMPUTE FUNCTIONAL-CLASS BASED AADT AVERAGE FOR EVERY STATE
 ########################################################################################################################
@@ -802,3 +811,35 @@ arcpy.CopyFeatures_management('xrfsiteslyr', XRFsites_projattri)
 # #Get census data
 # arcpy.Project_management(censustract, 'Tract_2010Census_proj', UTM10)
 # arcpy.SpatialJoin_analysis('trees_zoning', 'Tract_2010Census_proj', 'trees_zoning_census', join_operation='JOIN_ONE_TO_ONE', match_option='WITHIN')
+
+########################################################################################################################
+# SUBSET HPMS TIGER AROUND AQI STATIONS
+########################################################################################################################
+#Intersect roads with buffers
+OSMAQI =  os.path.join(AQIgdb, 'AQI_OSMinters')
+arcpy.Intersect_analysis([AQIsites_bufunion, USOSM], OSMAQI, join_attributes='ALL')
+
+ #Get SPD and AADT medians for each fclass
+fclass_SPDADTmedian = pd.read_csv(os.path.join(rootdir, 'results/OSM_SPDADTmedian.csv'))
+
+ #OSM AADT AND SPD (apply Puget Sound data for now  get US-wide data in the future)
+#Convert OSM functional categories to numbers
+arcpy.AddField_management(OSMAQI, 'fclassADT', 'LONG')
+arcpy.AddField_management(OSMAQI, 'fclassSPD', 'LONG')
+with arcpy.da.UpdateCursor(OSMAQI, ['fclass','fclassADT', 'fclassSPD']) as cursor:
+    for row in cursor:
+        if any(fclass_SPDADTmedian['first'].isin([row[0]])):
+            if row[0] in ['service','unclassified','unknown', 'living_street']: #Value for service and unclassified seem overestimated
+                row[1] = int(fclass_SPDADTmedian[fclass_SPDADTmedian['first'] == 'residential'].mean_ADT)
+            else:
+                row[1] = int(fclass_SPDADTmedian.loc[fclass_SPDADTmedian['first'] == row[0]].mean_ADT)
+
+             row[2] = int(fclass_SPDADTmedian.loc[fclass_SPDADTmedian['first'] == row[0]].mean_SPD)
+        else:
+            row[1]=0
+            row[2]=0
+        cursor.updateRow(row)
+
+ #Project OSM data
+OSMAQIproj = os.path.join(AQIgdb, 'OSMAQIproj')
+arcpy.Project_management(OSMAQI, OSMAQIproj, out_coor_system=AQIsites_bufunion)
