@@ -1,3 +1,8 @@
+""""
+Comment: in February 2019, changed Bing congestion post-processing to reclassify green:0, yellow:1, orange:2, red:3 to
+green:1, yellow:2, orangeL3, red:4. This led to regenerating intermediate outputs with 2 as a suffix and bingeuc1902
+or e.g. heat_bing1902log500"""
+
 import arcpy
 import math
 import glob
@@ -10,7 +15,7 @@ arcpy.CheckOutExtension("Spatial")
 arcpy.env.overwriteOutput=True
 
 #Set up paths
-rootdir = 'F:/Mathis/Levin_Lab/stormwater/'
+rootdir = 'D:/Mathis/ICSL/stormwater/'
 res= path.join(rootdir, 'results/bing/')
 arcpy.env.workspace=res
 mlclist = [filenames for (dirpath, dirnames, filenames) in walk(res)][0]
@@ -31,7 +36,7 @@ if arcpy.Exists(gdb):
 else:
     arcpy.CreateFileGDB_management(path.join(rootdir,'results/bing'), 'postprocess.gdb')
 
-#Output variables
+#Output variables (2 because changing from G0Y1O2R3 to G1Y2O3R4)
 bingmean_odd = path.join(res,'bingmeanod2')
 bingmean_even = path.join(res,'bingmeanev2')
 traffic3am_ras = path.join(res, 'traffic3am2')
