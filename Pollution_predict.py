@@ -22,12 +22,13 @@ arcpy.env.overwriteOutput=True
 arcpy.env.qualifiedFieldNames = False
 
 #Set up paths
-rootdir = 'C:/Mathis/ICSL/stormwater'
+rootdir = 'D:/Mathis/ICSL/stormwater'
 moddir = os.path.join(rootdir, 'results/data_modeling')
 PSgdb=os.path.join(rootdir,'results/PSOSM.gdb')
 Binggdb = os.path.join(rootdir, 'results/bing/postprocess.gdb')
 transitgdb = os.path.join(rootdir, 'results/transit.gdb')
 Seattlegdb = os.path.join(rootdir, 'results/Seattle_sampling.gdb')
+pollutgdb = os.path.join(rootdir,'results/pollution_variables.gdb')
 
 #Create new gdb for predictions
 predgdb = os.path.join(rootdir,'results/PSpredictions.gdb')
@@ -37,19 +38,60 @@ predgdb = os.path.join(rootdir,'results/PSpredictions.gdb')
 #     arcpy.CreateFileGDB_management(os.path.join(rootdir,'results'), 'PSpredictions.gdb')
 
 #Define variables
-heatOSMAADTlog50 = os.path.join(Seattlegdb, 'heatOSMAADTlog50')
-heatOSMAADTlog100 = os.path.join(Seattlegdb, 'heatOSMAADTlog100')
-heatSPDlog300 = os.path.join(PSgdb, 'heatSPDlog300')
-heatbustransitlog300 = os.path.join(transitgdb, 'heatbustransitlog300')
+heatsubAADTlog100 = os.path.join(pollutgdb, 'heatsubAADTlog100')
+heatbustransitlog200 = os.path.join(transitgdb, 'heatbustransitlog300')
 heat_binglog300 = os.path.join(rootdir, 'results/bing/binglog300')
 heatbing1902log300 = os.path.join(rootdir, 'results/bing/heatbing1902log300.tif')
-nlcd_imp_ps = os.path.join(rootdir, 'results/nlcd_imp_ps')
-heatOSMgradientlog300 = os.path.join(PSgdb, 'heatOSMgradientlog300')
+nlcd_imp_ps_mean = os.path.join(rootdir, 'results/nlcd_imp_ps_mean.tif')
 
 #Load models
 mods = ro.r['readRDS'](os.path.join(moddir,'fieldXRFmodels.rds'))
 modscale = ro.r['readRDS'](os.path.join(moddir, 'fieldXRFmodels_scaling.rds'))
 print(base.names(mods)) #Get model names
+
+#Predict Zn
+znmod = mods.rx('logZnmod')[0]
+znmodc = stats.coef(znmod)
+print(znmodc)
+
+#Model 33
+predzn = Int((100*
+             Exp(
+                 znmodc.rx('(Intercept)')[0] +
+                 (znmodc.rx('heatbing1902log300')[0] * 100*Float(arcpy.sa.Raster(heatbing1902log300))/modscale.rx('heatbing1902log300')[0][0]) +
+                 (znmodc.rx('heatsubAADTlog100frt')[0] * ((100*Float(Con(IsNull(Raster(heatsubAADTlog100)), 0, Raster(heatsubAADTlog100)))
+                  /modscale.rx('heatsubAADTlog100')[0][0])**(1/4))) +
+                 (znmodc.rx('nlcd_imp_ps_mean')[0] * Float(Con(IsNull(Raster(nlcd_imp_ps_mean)), 0, Raster(nlcd_imp_ps_mean))))+
+                 (znmodc.rx('nlcd_imp_ps_mean:heatbing1902log300')[0] *
+                  (100*Float(arcpy.sa.Raster(heatbing1902log300))/modscale.rx('heatbing1902log300')[0][0]) *
+                  Float(Con(IsNull(Raster(nlcd_imp_ps_mean)), 0, Raster(nlcd_imp_ps_mean))))
+             )) + 0.5
+             )
+predzn.save(os.path.join(predgdb, 'predzn33'))
+
+heatbing = (znmodc.rx('heatbing1902log300')[0] * 100*Float(arcpy.sa.Raster(heatbing1902log300))/modscale.rx('heatbing1902log300')[0][0])
+heatbing.save(os.path.join(predgdb, 'testbing'))
+checkaadt = (znmodc.rx('heatsubAADTlog100frt')[0] * ((100*Float(Con(IsNull(Raster(heatsubAADTlog100)), 0, Raster(heatsubAADTlog100)))
+                  /modscale.rx('heatsubAADTlog100')[0][0])**(1/4)))
+checkaadt.save(os.path.join(predgdb, 'testaadt'))
+checkinterac =                  (znmodc.rx('nlcd_imp_ps_mean:heatbing1902log300')[0] *
+                  (100*Float(arcpy.sa.Raster(heatbing1902log300))/modscale.rx('heatbing1902log300')[0][0]) *
+                  Float(Con(IsNull(Raster(nlcd_imp_ps_mean)), 0, Raster(nlcd_imp_ps_mean))))
+checkinterac.save(os.path.join(predgdb, 'checkinterac'))
+
+XRFsites_projUTM = os.path.join(PSgdb, 'XRFsites_projUTM')
+
+sitescheck = os.path.join(predgdb,'sitescheck')
+UTM10 = arcpy.SpatialReference(26910)
+arcpy.Project_management(os.path.join(rootdir, 'results/PSpredictions.gdb/XRFsites_proj'), sitescheck, UTM10)
+arcpy.sa.ExtractMultiValuesToPoints(sitescheck, [os.path.join(predgdb, ras) for ras in ['testbing','checkinterac']])
+arcpy.CopyRows_management(sitescheck, os.path.join(rootdir, 'results/checkznint.csv'))
+
+arcpy.CopyFeatures_management(os.path.join(rootdir, 'results/PSpredictions.gdb/XRFsites_proj'), sitescheck+'notUTM')
+arcpy.sa.ExtractMultiValuesToPoints(sitescheck, [heatbing1902log300, nlcd_imp_ps_mean], bilinear_interpolate_values='NONE')
+arcpy.sa.ExtractMultiValuesToPoints(sitescheck+'notUTM', [heatsubAADTlog100])
+arcpy.CopyRows_management(sitescheck, os.path.join(rootdir, 'results/checkznint2.csv'))
+arcpy.CopyRows_management(sitescheck+'notUTM', os.path.join(rootdir, 'results/checkznint3.csv'))
 
 #Predict pollution index
 pmod = mods.rx('pollutmod')[0]
@@ -67,93 +109,6 @@ pollutind43 = Int(pmodc.rx('(Intercept)')[0] +
 pollutind43.save(os.path.join(predgdb, 'pollutind43'))
 #arcpy.Delete_management(os.path.join(predgdb, 'pollutind43'))
 
-
-
-# pollutind = Int(pmodc.rx('(Intercept)')[0] +
-#     pmodc.rx('heat_binglog300')[0] * 100*Float(arcpy.sa.Raster(heat_binglog300))/modscale.rx('heat_binglog300')[0][0] +
-#     pmodc.rx('heatbustransitlog300')[0] * 100*Float(Con(IsNull(Raster(heatbustransitlog300)), 0 , Raster(heatbustransitlog300)))
-#                 /modscale.rx('heatbustransitlog300')[0][0]+
-#     pmodc.rx('heatOSMAADTlog50')[0] * 100*Float(Con(IsNull(Raster(heatOSMAADTlog50)), 0, Raster(heatOSMAADTlog50)))
-#                 /modscale.rx('heatOSMAADTlog50')[0][0] +
-#     pmodc.rx('heat_binglog300')[0] * 100*Float(Raster(heat_binglog300))/modscale.rx('heat_binglog300')[0][0] +
-#     pmodc.rx('nlcd_imp_ps')[0] * Float(Con(IsNull(Raster(nlcd_imp_ps)), 0, Raster(nlcd_imp_ps))) + 0.5)
-# pollutind.save(os.path.join(predgdb, 'pollutind'))
-
-
-#Predict Zn
-znmod = mods.rx('logZnmod')[0]
-znmodc = stats.coef(znmod)
-print(znmodc)
-
-#Model 30
-# predzn = Int(100*
-#              Exp(
-#                  znmodc.rx('(Intercept)')[0] +
-#                  (znmodc.rx('heatbustransitlog300')[0] * 100*Float(Con(IsNull(Raster(heatbustransitlog300)), 0 , Raster(heatbustransitlog300)))
-#                   /modscale.rx('heatbustransitlog300')[0][0]) +
-#                  (znmodc.rx('heatbing1902log300')[0] * 100*Float(arcpy.sa.Raster(heatbing1902log300))/modscale.rx('heatbing1902log300')[0][0]) +
-#                  (znmodc.rx('heatOSMAADTlog100')[0] * 100*Float(Con(IsNull(Raster(heatOSMAADTlog100)), 0, Raster(heatOSMAADTlog100)))
-#                   /modscale.rx('heatOSMAADTlog100')[0][0]) +
-#                  (znmodc.rx('heatSPDlog300')[0] * 100 * Float(Con(IsNull(Raster(heatSPDlog300)), 0, Raster(heatSPDlog300)))
-#                   /modscale.rx('heatSPDlog300')[0][0]) +
-#                  (znmodc.rx('heatSPDlog300:heatOSMAADTlog100')[0] *
-#                   (100*Float(Con(IsNull(Raster(heatSPDlog300)), 0, Raster(heatSPDlog300)))/modscale.rx('heatSPDlog300')[0][0]) *
-#                   (100*Float(Con(IsNull(Raster(heatOSMAADTlog100)), 0, Raster(heatOSMAADTlog100)))/modscale.rx('heatOSMAADTlog100')[0][0]))
-#              )
-#              )
-#
-# #Model 11
-# predzn = Int(100*
-#              Exp(
-#                  znmodc.rx('(Intercept)')[0] +
-#                  (znmodc.rx('heatbustransitlog300')[0] * 100*Float(Con(IsNull(Raster(heatbustransitlog300)), 0 , Raster(heatbustransitlog300)))
-#                   /modscale.rx('heatbustransitlog300')[0][0]) +
-#                  (znmodc.rx('heatbing1902log300')[0] * 100*Float(arcpy.sa.Raster(heatbing1902log300))/modscale.rx('heatbing1902log300')[0][0]) +
-#                  (znmodc.rx('heatSPDlog300')[0] * 100 * Float(Con(IsNull(Raster(heatSPDlog300)), 0, Raster(heatSPDlog300)))
-#                   /modscale.rx('heatSPDlog300')[0][0]) +
-#                  (znmodc.rx('heatSPDlog300:heatbing1902log300')[0] *
-#                   (100*Float(Con(IsNull(Raster(heatSPDlog300)), 0, Raster(heatSPDlog300)))/modscale.rx('heatSPDlog300')[0][0]) *
-#                   (100*Float(Con(IsNull(Raster(heatbing1902log300)), 0, Raster(heatbing1902log300)))/modscale.rx('heatbing1902log300')[0][0]))
-#              )
-#              )
-
-# #Model 12
-# predzn12 = Int(100*
-#              Exp(
-#                  znmodc.rx('(Intercept)')[0] +
-#                  (znmodc.rx('heatbustransitlog300')[0] * 100*Float(Con(IsNull(Raster(heatbustransitlog300)), 0 , Raster(heatbustransitlog300)))
-#                   /modscale.rx('heatbustransitlog300')[0][0]) +
-#                  (znmodc.rx('heatbing1902log300')[0] * 100*Float(arcpy.sa.Raster(heatbing1902log300))/modscale.rx('heatbing1902log300')[0][0]) +
-#                  (znmodc.rx('heatSPDlog300')[0] * 100 * Float(Con(IsNull(Raster(heatSPDlog300)), 0, Raster(heatSPDlog300)))
-#                   /modscale.rx('heatSPDlog300')[0][0]) +
-#                  (znmodc.rx('I(heatSPDlog300^2)')[0] *
-#                   Power((100*Float(Con(IsNull(Raster(heatbing1902log300)), 0, Raster(heatbing1902log300)))
-#                          /modscale.rx('heatbing1902log300')[0][0]),
-#                         2)
-#                   )
-#              )
-#              )
-# predzn12.save(os.path.join(predgdb, 'predzn12'))
-
-#Model 28
-# predzn28 = Int(100*
-#                Exp(
-#                    znmodc.rx('(Intercept)')[0] +
-#                    (znmodc.rx('heatbustransitlog300')[0] * 100*Float(Con(IsNull(Raster(heatbustransitlog300)), 0 , Raster(heatbustransitlog300)))
-#                     /modscale.rx('heatbustransitlog300')[0][0]) +
-#                    (znmodc.rx('heatbing1902log300')[0] * 100*Float(arcpy.sa.Raster(heatbing1902log300))/modscale.rx('heatbing1902log300')[0][0]) +
-#                    (znmodc.rx('heatSPDlog300')[0] * 100 * Float(Con(IsNull(Raster(heatSPDlog300)), 0, Raster(heatSPDlog300)))
-#                     /modscale.rx('heatSPDlog300')[0][0]) +
-#                    (znmodc.rx('heatOSMgradientlog300')[0] * 100 * Float(
-#                        Con(IsNull(Raster(heatOSMgradientlog300)), 0, Raster(heatOSMgradientlog300)))
-#                     / modscale.rx('heatOSMgradientlog300')[0][0]) +
-#                    (znmodc.rx('heatSPDlog300:heatOSMgradientlog300')[0] *
-#                     (100*Float(Con(IsNull(Raster(heatSPDlog300)), 0, Raster(heatSPDlog300)))/modscale.rx('heatSPDlog300')[0][0]) *
-#                     (100*Float(Con(IsNull(Raster(heatOSMgradientlog300)), 0, Raster(heatOSMgradientlog300)))/modscale.rx('heatOSMgradientlog300')[0][0])
-#                     )
-#                )
-#                )
-# predzn28.save(os.path.join(predgdb, 'predzn28'))
 
 
 

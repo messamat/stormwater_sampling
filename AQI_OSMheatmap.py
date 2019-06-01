@@ -9,7 +9,7 @@ from heatmap_custom import *
 arcpy.CheckOutExtension("Spatial")
 arcpy.env.overwriteOutput=True
 
-def OSMtoheat(site, inshp, res, kernel_dir, keyw, inFID, heatfield, sitedic, outdir):
+def roadtoheat(site, inshp, res, kernel_dir, keyw, inFID, heatfield, sitedic, outdir):
     expr =  """{0} = {1}""".format(arcpy.AddFieldDelimiters(inshp, inFID), str(site))
     print(expr)
     arcpy.MakeFeatureLayer_management(in_features=inshp, out_layer='lyr')
@@ -37,14 +37,14 @@ def OSMtoheat(site, inshp, res, kernel_dir, keyw, inFID, heatfield, sitedic, out
     arcpy.Delete_management('lyr') #might not be necessary
 
 if __name__ == '__main__':
-    rootdir = 'F:/Levin_Lab//stormwater'
+    rootdir = 'D:/Mathis/ICSL//stormwater'
     template_ras = os.path.join(rootdir,'results/bing/181204_02_00_class_mlc.tif')
     res = arcpy.GetRasterProperties_management(template_ras, 'CELLSIZEX').getOutput(0)
 
     AQIgdb = os.path.join(rootdir, 'results/airdata/AQI.gdb')
     AQIdir = os.path.join(rootdir, 'results/airdata')
-    AQIsites_bufunion = os.path.join(rootdir, 'results/airdata/airsites_600bufunion.shp')
-    OSMAQIproj = os.path.join(AQIgdb, 'OSMAQIproj')
+    AQIsites_bufunion = os.path.join(rootdir, 'results/airdata/airsites_550bufunion.shp')
+    roadAQI = os.path.join(AQIgdb, 'AQI_hpmstigerinters')
 
     #[f.name for f in arcpy.ListFields(OSMAQIproj)]
     AQIbuflist = defaultdict(list)
@@ -72,16 +72,16 @@ if __name__ == '__main__':
 
     tic = time.time()
     p = multiprocessing.Pool(int(multiprocessing.cpu_count()/2))
-    OSMtoheat_partial = partial(OSMtoheat,
-                                inshp = OSMAQIproj,
+    roadtoheat_partial = partial(roadtoheat,
+                                inshp = roadAQI,
                                 res=res,
                                 kernel_dir = os.path.join(rootdir, 'results/bing'),
-                                keyw = 'log300',
-                                inFID = 'FID_airsites_600bufunion',
-                                heatfield = 'fclassSPD',
+                                keyw = 'log100',
+                                inFID = 'FID_airsites_550bufunion',
+                                heatfield = 'aadt_filled',
                                 sitedic = AQIbuflist,
                                 outdir = AQIdir)
     print('Launch parallel processing')
-    p.map(OSMtoheat_partial, keylist)
+    p.map(roadtoheat_partial, keylist)
     p.close()
     print(time.time() - tic)

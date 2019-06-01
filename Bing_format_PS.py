@@ -45,29 +45,27 @@ traffic2am_ras = path.join(res, 'traffic2am2')
 bingclean_odd = path.join(res, 'bingcleanod2')
 bingclean_even = path.join(res, 'bingcleanev2')
 bingclean_mean = path.join(gdb, 'bingcleanmea2')
-bingeuc = path.join(res, 'bingeuc2')
+bingeuc = path.join(res, 'bingeucdir/bingeuc2')
 
-arcpy.Project_management(sites, path.join(rootdir, "data\\field_data\sampling_sites_edit_proj.shp"), out_coor_system=path.join(res, clasfiles[0]))
-sitesbuf =  path.join(rootdir, "data\\field_data\sampling_sites_edit1000mbuffer.shp")
-arcpy.Buffer_analysis(path.join(rootdir, "data\\field_data\sampling_sites_edit_proj.shp"), sitesbuf
-                     , '1000 meters', method='GEODESIC')
-
+# arcpy.Project_management(sites, path.join(rootdir, "data\\field_data\sampling_sites_edit_proj.shp"), out_coor_system=path.join(res, clasfiles[0]))
+# sitesbuf =  path.join(rootdir, "data\\field_data\sampling_sites_edit1000mbuffer.shp")
+# arcpy.Buffer_analysis(path.join(rootdir, "data\\field_data\sampling_sites_edit_proj.shp"), sitesbuf
+#                      , '1000 meters', method='GEODESIC')
 
 #Reclassify (2 min/hourly image when out of a gdb, then 8 minutes when using gdb?)
 arcpy.env.workspace= gdb
-arcpy.env.extent = sitesbuf
-if not arcpy.ListRasters('reclas2_*'):
-    remap = RemapValue([[1, 0], [2, 1], [3, 0], [4, 0], [5, 3], [6, 4], [7, 0], [8, 2],['NODATA',0]])
-    for f in clasfiles:
-        t0 = time.time()
-        print(f)
-        outf = path.join(gdb, 'reclas2_{}'.format(f[:-14]))
-        if arcpy.Exists(outf):
-            print('{} already exists'.format(outf))
-        else:
-            outReclass = Reclassify(path.join(res, f), 'Value', remap, "DATA")
-            outReclass.save(outf)
-        print(time.time() - t0)
+# if not arcpy.ListRasters('reclas2_*'):
+remap = RemapValue([[1, 0], [2, 1], [3, 0], [4, 0], [5, 3], [6, 4], [7, 0], [8, 2],['NODATA',0]])
+for f in clasfiles:
+    t0 = time.time()
+    print(f)
+    outf = path.join(gdb, 'reclas2_{}'.format(f[:-14]))
+    # if arcpy.Exists(outf):
+    #     print('{} already exists'.format(outf))
+    # else:
+    outReclass = Reclassify(path.join(res, f), 'Value', remap, "DATA")
+    outReclass.save(outf)
+    print(time.time() - t0)
 
 #Create list of layers for odd and even hours to remove bing logo
 reclasfiles = arcpy.ListRasters('reclas2_*')
@@ -151,15 +149,15 @@ for xmin, xmax in zip(xpl[:-1], xpl[1:]):
 
 #Mosaic all tiles
 arcpy.ResetEnvironments()
-arcpy.env.extent = sitesbuf
+#arcpy.env.extent = sitesbuf
 if not arcpy.Exists(path.join(gdb, 'bingeuc1902')):
-    arcpy.env.workspace = res
+    arcpy.env.workspace = os.path.join(res, 'bingeucdir')
     arcpy.MosaicToNewRaster_management(arcpy.ListRasters('bingeuc*'), gdb, 'bingeuc1902', coordinate_system_for_the_raster= UTM10,
                                        pixel_type = '16_BIT_UNSIGNED', number_of_bands=1, mosaic_method='LAST')
 
 #Create heatmap - focal statistics
 customheatmap(kernel_dir=path.join(rootdir, 'results/bing'), in_raster=path.join(gdb, 'bingeuc1902'),
-              out_gdb = gdb, out_var='bing1902', divnum=100, keyw='log[5]00')
+              out_gdb = gdb, out_var='bing1902', divnum=100, keyw='log[3]00')
 
 
 #Project, and compute heat index out of 100

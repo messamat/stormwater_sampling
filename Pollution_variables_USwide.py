@@ -47,23 +47,40 @@ XRFsites = os.path.join(rootdir, 'data/field_data/sampling_sites_edit.shp')
 Binggdb = os.path.join(rootdir, 'results/bing/postprocess.gdb')
 
 NLCD_reclass = os.path.join(rootdir, 'results/LU.gdb/NLCD_reclass_final')
-NLCD_imp = os.path.join(rootdir, 'data/nlcd_2011_impervious_2011_edition_2014_10_10/nlcd_2011_impervious_2011_edition_2014_10_10.img') #Zipped
+NLCD_imp = os.path.join(rootdir, 'data/NLCD_2016_Impervious_L48_20190405.img') #Zipped
 UTM10 = arcpy.SpatialReference(26910)
 
 STgtfs = os.path.join(rootdir, 'data\SoundTransit_201812\gtfs_puget_sound_consolidated.zip')
 transitwiki_dir = os.path.join(rootdir, 'data/TransitWiki201812')
 
+PSdissolve = os.path.join(rootdir, 'results/PSwtshd_dissolve.shp')
+
 template_ras = os.path.join(rootdir,'results/bing/181204_02_00_class_mlc.tif')
-res = arcpy.GetRasterProperties_management(template_ras, 'CELLSIZEX')
+restemplate = arcpy.GetRasterProperties_management(template_ras, 'CELLSIZEX')
 pollutgdb = os.path.join(rootdir,'results/pollution_variables.gdb')
 if arcpy.Exists(pollutgdb):
     print('Geodatabase already exists')
 else:
     arcpy.CreateFileGDB_management(os.path.join(rootdir,'results'), 'pollution_variables.gdb')
 
+pollutgdbPS = os.path.join(rootdir, 'results/pollution_variables_PS.gdb')
+if arcpy.Exists(pollutgdbPS):
+    print('Geodatabase already exists')
+else:
+    arcpy.CreateFileGDB_management(os.path.join(rootdir, 'results'), 'pollution_variables_PS.gdb')
+
 #usa contiguous albers equal area conic - esri projection 102003
 #Spatial reference: http://spatialreference.org/ref/esri/usa-contiguous-albers-equal-area-conic/
 albers = arcpy.SpatialReference(102003) #"+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"
+
+#Get buffer around AQI sites
+AQIsites_bufunion = os.path.join(rootdir, 'results/airdata/airsites_550bufunion.shp')
+AQIgdb = os.path.join(rootdir, 'results/airdata/AQI.gdb')
+#Create gdb for analysis
+if arcpy.Exists(AQIgdb):
+    print('Geodatabase already exists')
+else:
+    arcpy.CreateFileGDB_management(os.path.join(rootdir,'results/airdata'), 'AQI.gdb')
 
 #Output variables
 usdotgdb = os.path.join(resdir, 'usdot.gdb')
@@ -86,12 +103,14 @@ states = os.path.join(tiger16dir, 'tl_2016_us_state/tl_2016_us_state.shp')
 hpmstiger = os.path.join(usdotgdb, 'hpmstiger')
 
 hpms_sub = os.path.join(usdotgdb, 'hpmstiger_subset')
+hpms_PS = os.path.join(usdotgdb, 'hpmstiger_PS')
 hpms_ras19 = os.path.join(usdotgdb, 'hpmstiger_subsetras19')
 hpms_ras13 = os.path.join(usdotgdb, 'hpmstiger_subsetras13')
 siteshull = os.path.join(rootdir, 'results/XRFsites_convexhull.shp')
 
 NLCD_reclass_PS = os.path.join(rootdir, 'results/NLCD_reclass_final_PS.tif')
 NLCD_imp_PS = os.path.join(rootdir, 'results/nlcd_imp_ps')
+NLCD_imp_AQI_mean = os.path.join(rootdir, 'results/nlcd_imp_AQI_mean.tif')
 
 NTMroutes = os.path.join(rootdir, 'results/NTM.gdb/NTM_routes')
 NTMsel = os.path.join(rootdir, 'results/NTM.gdb/NTM_routes_sel')
@@ -114,15 +133,6 @@ PSgdb = os.path.join(rootdir, 'results/PSpredictions.gdb')
 XRFsites_proj = os.path.join(PSgdb, 'XRFsites_proj')
 XRFsites_projUTM = os.path.join(PSgdb, 'XRFsites_projUTM')
 XRFsites_projattri = os.path.join(PSgdb, 'XRFsites_projallattri')
-
-#Get buffer around AQI sites
-AQIsites_bufunion = os.path.join(rootdir, 'results/airdata/airsites_600bufunion.shp')
-AQIgdb = os.path.join(rootdir, 'results/airdata/AQI.gdb')
-#Create gdb for analysis
-if arcpy.Exists(AQIgdb):
-    print('Geodatabase already exists')
-else:
-    arcpy.CreateFileGDB_management(os.path.join(rootdir,'results/airdata'), 'AQI.gdb')
 
 ########################################################################################################################
 # COMPUTE FUNCTIONAL-CLASS BASED AADT AVERAGE FOR EVERY STATE
@@ -563,7 +573,7 @@ for tile in tilelist:
             tmplyr = os.path.join(tmpdir, 'transit{}.shp'.format(tile))
             arcpy.CopyFeatures_management('transit_lyr', tmplyr)
             arcpy.PolylineToRaster_conversion(tmplyr, value_field='SUM_NTM_routes_selproj_split_adjustnum_int'[0:10],
-                                              out_rasterdataset=outras, cellsize=res)
+                                              out_rasterdataset=outras, cellsize=restemplate)
         except:
             traceback.print_exc()
             try:
@@ -643,7 +653,7 @@ arcpy.Dissolve_management("intlyr", PStransitbus_splitdiss, dissolve_field='expl
 arcpy.RepairGeometry_management(PStransitbus_splitdiss, delete_null = 'DELETE_NULL') #sometimes creates empty geom
 #Get the length of a half pixel diagonal to create buffers for
 #guaranteeing that segments potentially falling within the same pixel are rasterized separately
-tolerance = (2.0**0.5)*float(res.getOutput(0))/2
+tolerance = (2.0**0.5)*float(restemplate.getOutput(0))/2
 ExplodeOverlappingLines(PStransitbus_splitdiss, tolerance)
 
 #For each set of non-overlapping lines, create its own raster
@@ -657,7 +667,7 @@ for tile in tilelist:
         selexpr = '{0} = {1}'.format(tilef, tile)
         print(selexpr)
         arcpy.MakeFeatureLayer_management(PStransitbus_splitdiss, 'bus_lyr', where_clause= selexpr)
-        arcpy.PolylineToRaster_conversion('bus_lyr', value_field='adjustnum_int', out_rasterdataset=outras, cellsize=res)
+        arcpy.PolylineToRaster_conversion('bus_lyr', value_field='adjustnum_int', out_rasterdataset=outras, cellsize=restemplate)
 
 #Mosaic to new raster
 arcpy.env.workspace = os.path.split(outras_base)[0]
@@ -721,31 +731,20 @@ if len(missinglist)>0:
     print('{} roads did not have any elevation range value'.format(len(missinglist)))
 
 ########################################################################################################################
-# PREPARE LAND USE DATA
+# CREATE HEATMAPS FOR SEATTLE MODEL TRAINING (for all variables aside from Bing data)
 ########################################################################################################################
-#Export NLCD data to Puget Sound scale
-arcpy.env.extent = siteshull
-arcpy.ProjectRaster_management(NLCD_reclass, NLCD_reclass_PS, UTM10, resampling_type='NEAREST')
-#Export NLCD impervious data
-arcpy.ProjectRaster_management(NLCD_imp, NLCD_imp_PS, UTM10, resampling_type='BILINEAR')
-#Compute focal stats
-imp_mean = arcpy.sa.FocalStatistics(NLCD_imp_PS, neighborhood = NbrCircle(3, "CELL"), statistics_type= 'MEAN')
-imp_mean.save(NLCD_imp_PS + '_mean.tif')
-
-########################################################################################################################
-# CREATE HEATMAPS FOR SEATTLE AREA MODEL TRAINING (for all variables aside from Bing data)
-########################################################################################################################
+#Get heatmaps
 arcpy.env.workspace = pollutgdb
 #AADT
 arcpy.PolylineToRaster_conversion(hpms_sub, value_field='aadt_filled', out_rasterdataset='hpmssubAADT',
-                                  priority_field='aadt_filled', cellsize=res)
+                                  priority_field='aadt_filled', cellsize=restemplate)
 customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=os.path.join(pollutgdb, 'hpmssubAADT'),
               out_gdb=pollutgdb, out_var='subAADT', divnum=100, keyw='(pow|log)[1235]00(_[123])*', verbose=True)
 
 #Speed limit
 [f.name for f in arcpy.ListFields(hpms_sub)]
 arcpy.PolylineToRaster_conversion(hpms_sub, value_field='spdl_filled', out_rasterdataset='hpmssubspdl',
-                                  priority_field='spdl_filled', cellsize=res)
+                                  priority_field='spdl_filled', cellsize=restemplate)
 customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=os.path.join(pollutgdb, 'hpmssubspdl'),
               out_gdb=pollutgdb, out_var='subspdl', divnum=100, keyw='(pow|log)(([1235]00)|50)(_[123])*', verbose=True)
 
@@ -757,11 +756,12 @@ customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=PStran
 
 #Road gradient
 arcpy.PolylineToRaster_conversion(hpms_sub, value_field='gradient', out_rasterdataset='hpmssubslope',
-                                  priority_field='aadt_filled', cellsize=res)
+                                  priority_field='aadt_filled', cellsize=restemplate)
 customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=os.path.join(pollutgdb, 'hpmssubslope'),
               out_gdb=pollutgdb, out_var='subslope', divnum=0.01, keyw='(pow|log)(([1235]00)|50)(_[123])*', verbose=True)
 
 #Bing
+#See Bing_format_PS.py (for Sound) and Bing_format_parallel.py (for AQI stations)
 
 
 ########################################################################################################################
@@ -784,8 +784,7 @@ def Iter_ListRaster(workspaces, wildcard):
 heatlist_webmercator = Iter_ListRaster([pollutgdb], 'heat*')
 heatlist_UTM = Iter_ListRaster([Binggdb, transitgdb], 'heat*') + [NLCD_imp_PS, NLCD_imp_PS + '_mean.tif']
 
-
-#Project
+#Project (projecting to these two systems lead to a slight shift)
 arcpy.Project_management(XRFsites, XRFsites_proj, heatlist_webmercator[0])
 arcpy.Project_management(XRFsites, XRFsites_projUTM, UTM10)
 
@@ -813,33 +812,45 @@ arcpy.CopyFeatures_management('xrfsiteslyr', XRFsites_projattri)
 # arcpy.SpatialJoin_analysis('trees_zoning', 'Tract_2010Census_proj', 'trees_zoning_census', join_operation='JOIN_ONE_TO_ONE', match_option='WITHIN')
 
 ########################################################################################################################
+# CREATE HEATMAPS FOR PUGET SOUND MODEL PREDICTIONS (subset of variables based on selected model)
+########################################################################################################################
+#Subset hpms tiger road dataset based on Puget Sound
+arcpy.Clip_analysis(hpmstiger, PSdissolve, hpms_PS)
+
+arcpy.env.workspace = pollutgdbPS
+#AADT
+arcpy.PolylineToRaster_conversion(hpms_PS, value_field='aadt_filled', out_rasterdataset='hpmsPSAADT',
+                                  priority_field='aadt_filled', cellsize=restemplate)
+customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=os.path.join(pollutgdbPS, 'hpmsPSAADT'),
+              out_gdb=pollutgdbPS, out_var='PSAADT', divnum=100, keyw='log100*', verbose=True)
+
+########################################################################################################################
 # SUBSET HPMS TIGER AROUND AQI STATIONS
 ########################################################################################################################
 #Intersect roads with buffers
-OSMAQI =  os.path.join(AQIgdb, 'AQI_OSMinters')
-arcpy.Intersect_analysis([AQIsites_bufunion, USOSM], OSMAQI, join_attributes='ALL')
+roadAQI =  os.path.join(AQIgdb, 'AQI_hpmstigerinters')
+arcpy.Intersect_analysis([AQIsites_bufunion, hpmstiger], roadAQI, join_attributes='ALL')
 
- #Get SPD and AADT medians for each fclass
+#Get SPD and AADT medians for each fclass
 fclass_SPDADTmedian = pd.read_csv(os.path.join(rootdir, 'results/OSM_SPDADTmedian.csv'))
 
- #OSM AADT AND SPD (apply Puget Sound data for now  get US-wide data in the future)
-#Convert OSM functional categories to numbers
-arcpy.AddField_management(OSMAQI, 'fclassADT', 'LONG')
-arcpy.AddField_management(OSMAQI, 'fclassSPD', 'LONG')
-with arcpy.da.UpdateCursor(OSMAQI, ['fclass','fclassADT', 'fclassSPD']) as cursor:
-    for row in cursor:
-        if any(fclass_SPDADTmedian['first'].isin([row[0]])):
-            if row[0] in ['service','unclassified','unknown', 'living_street']: #Value for service and unclassified seem overestimated
-                row[1] = int(fclass_SPDADTmedian[fclass_SPDADTmedian['first'] == 'residential'].mean_ADT)
-            else:
-                row[1] = int(fclass_SPDADTmedian.loc[fclass_SPDADTmedian['first'] == row[0]].mean_ADT)
-
-             row[2] = int(fclass_SPDADTmedian.loc[fclass_SPDADTmedian['first'] == row[0]].mean_SPD)
-        else:
-            row[1]=0
-            row[2]=0
-        cursor.updateRow(row)
-
- #Project OSM data
+#Project OSM data
 OSMAQIproj = os.path.join(AQIgdb, 'OSMAQIproj')
-arcpy.Project_management(OSMAQI, OSMAQIproj, out_coor_system=AQIsites_bufunion)
+arcpy.Project_management(roadAQI, OSMAQIproj, out_coor_system=AQIsites_bufunion)
+
+########################################################################################################################
+# PREPARE LAND USE DATA
+########################################################################################################################
+#Export NLCD data to Puget Sound scale
+arcpy.env.extent = siteshull
+arcpy.ProjectRaster_management(NLCD_reclass, NLCD_reclass_PS, UTM10, resampling_type='NEAREST')
+#Export NLCD impervious data
+arcpy.ProjectRaster_management(NLCD_imp, NLCD_imp_PS, UTM10, resampling_type='BILINEAR')
+#Compute focal stats
+imp_mean = arcpy.sa.FocalStatistics(NLCD_imp_PS, neighborhood = NbrCircle(3, "CELL"), statistics_type= 'MEAN')
+imp_mean.save(NLCD_imp_PS + '_mean.tif')
+
+#Compute focal stats within AQI buffers
+arcpy.env.mask = AQIsites_bufunion
+imp_mean = arcpy.sa.FocalStatistics(NLCD_imp, neighborhood = NbrCircle(3, "CELL"), statistics_type= 'MEAN')
+imp_mean.save(NLCD_imp_AQI_mean)
