@@ -14,15 +14,20 @@ import time
 import glob
 import dateparser
 import xarray as xr
-#Custom functions
-from Download_gist import *
 import cPickle as pickle
+import rpy2
+from rpy2 import robjects
+from rpy2.robjects import pandas2ri
+pandas2ri.activate()
+
+#Custom functions
 from xarrayDataAssembly import *
+from Download_gist import *
 
 #Set options
-arcpy.CheckOutExtension("Spatial")
-arcpy.env.overwriteOutput=True
-arcpy.env.qualifiedFieldNames = False
+#arcpy.CheckOutExtension("Spatial")
+#arcpy.env.overwriteOutput=True
+#arcpy.env.qualifiedFieldNames = False
 
 #Set up paths
 rootdir = 'D:/Mathis/ICSL/stormwater'
@@ -68,6 +73,13 @@ airdatall = os.path.join(AQIdir, 'daily_SPEC_collate.csv')
 airdat_uniquedfexp_pickle =  os.path.join(rootdir, 'results/airdat_uniquedfexp.p')
 
 #Functions
+def save_rdata_file(df, filename):
+    #Save panda df to rdata file
+    #https://stackoverflow.com/questions/15081858/can-i-use-rpy2-to-save-a-pandas-dataframe-to-an-rdata-file
+    r_data = pandas2ri.py2ri(df)
+    robjects.r.assign("my_df", r_data)
+    robjects.r("save(my_df, file='{}')".format(filename))
+
 def pdtogpd_datum(df, datum):
     "Subset df based on datum and create Geodataframe with the right assigned datum"
     crs = {'WGS84': {'init': 'epsg:4326'}, 'NAD27': {'init': 'epsg:4267'},'NAD83': {'init': 'epsg:6318'}} #'NAD83': {'init': 'epsg:1116'}}
@@ -253,7 +265,7 @@ fips_excluded = [us.states.lookup(abr).fips for abr in ['PR','AK','HI','VI','UM'
 monitors_chem['UID'] = monitors_chem['State Code'] + \
                        monitors_chem['County Code'].astype(str) + \
                        monitors_chem['Site Number'].astype(str)
-sites['UID'] = sites['State Code'].astype(str).astype(str) + \
+sites['UID'] = sites['State Code'].astype(str) + \
                sites['County Code'].astype(str) + \
                sites['Site Number'].astype(str)
 sites_chem = sites[(sites['UID'].isin(pd.unique(monitors_chem['UID']))) &
@@ -575,12 +587,12 @@ cdfvardict = {
 }
 
 #Iterate through variables to extract
-for var in cdfvardict.keys():
+for var in ['pres_sfc', 'shum_2m']: #cdfvardict.keys():
     try:
         print('Processing {}...'.format(var))
         extractCDFtoDF(indf = airdat_uniquedfexp_pickle, pattern= cdfvardict[var][0], indir=NARRdir, varname=var,
                        datecol = 'datetime_dupli', level=cdfvardict[var][1],
-                       keepcols = ['UID', 'datetime_dupli', 'x', 'y'], overwrite=False,
+                       keepcols = ['UID', 'datetime_dupli', 'x', 'y', var], overwrite=True,
                        outfile= os.path.join(rootdir, 'results/daily_SPEC_{}.p'.format(var.replace('.', '_'))))
     except Exception:
         traceback.print_exc()
@@ -591,8 +603,28 @@ for var in ['vwnd_500', 'hgt_850']:
     print('Processing {}...'.format(var))
     extractCDFtoDF(indf=airdat_uniquedfexp_pickle, pattern=cdfvardict[var][0], indir=NARRoutdir, varname=var,
                    datecol='datetime_dupli', level=cdfvardict[var][1],
-                   keepcols=['UID', 'datetime_dupli', 'x', 'y'], overwrite=False,
+                   keepcols=['UID', 'datetime_dupli', 'x', 'y', var], overwrite=True,
                    outfile=os.path.join(rootdir, 'results/daily_SPEC_{}.p'.format(var.replace('.', '_'))))
+
+#Collate all air data
+airdat_climmerge = pd.read_csv(airdatall)
+airdat_climmerge['UID'] = airdat_climmerge ['State Code'].astype(str).str.zfill(2) + \
+                   airdat_climmerge ['County Code'].astype(str) + \
+                   airdat_climmerge ['Site Num'].astype(str)
+
+for var in cdfvardict.keys():
+    print(var)
+    with open(os.path.join(rootdir, 'results/daily_SPEC_{}.p'.format(var.replace('.', '_'))), "rb") as input_file:
+         indf = pickle.load(input_file)
+    indf['Date Local'] = indf['datetime_dupli'].dt.date.astype(str)
+    indf_stat = indf.groupby(['UID', 'Date Local'], as_index=False).agg({var: ["max", "mean"]})
+    indf_stat.columns = ["".join(x) for x in indf_stat.columns.ravel()]
+    airdat_climmerge = airdat_climmerge.merge(indf_stat, on=['UID', 'Date Local'])
+
+    pickle.dump(airdat_climmerge, open(os.path.join(rootdir, "airdat_scratch"), "wb"))
+
+#Write out data to table (should use feather but some module conflicts and don't want to deal with it)
+airdat_climmerge.to_csv(os.path.join(rootdir, 'results/airdat_NARRjoin.csv'))
 
 
 

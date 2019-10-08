@@ -31,7 +31,7 @@ arcpy.env.overwriteOutput=True
 arcpy.env.qualifiedFieldNames = False
 
 #Set up paths
-rootdir = 'F:/Levin_Lab/stormwater'
+rootdir = 'D:/Mathis/ICSL/stormwater'
 
 roads = os.path.join(rootdir, 'data/CitySeattle_20180601/Seattle_Streets/Seattle_Streets.shp')
 kingroads = os.path.join(rootdir, 'data/King_201806/Metro_Transportation_Network_TNET_in_King_County_for_Car_Mode__trans_network_car_line/'
@@ -423,8 +423,6 @@ customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=OSM_gr
 
 ########################################################################################################################
 # GET TREES HEATMAP VALUES
-# Select candidate species of trees from the City of Seattle's street-tree dataset and extract heatmap values at their
-# location
 ########################################################################################################################
 #Project
 arcpy.Project_management(XRFsites, XRFsites_proj, UTM10)
@@ -440,14 +438,14 @@ def Iter_ListRaster(workspaces, wildcard):
     return outlist
 
 heatlist = Iter_ListRaster([PSgdb, gdb, os.path.join(rootdir, 'results/transit.gdb'), Binggdb], 'heat*')
-heatlist2 = heatlist + [NLCD_imp_PS, NLCD_imp_PS + '_mean.tif']
+heatlist2 = heatlist + [NLCD_imp_PS, NLCD_imp_PS + '_mean.tif', NLCD_reclass_PS]
 
-ExtractMultiValuesToPoints(XRFsites_proj, heatlist2, bilinear_interpolate_values='BILINEAR')
-ExtractMultiValuesToPoints(XRFsites_proj, os.path.join(rootdir, 'results/bing/heatbing1902log300.tif'), bilinear_interpolate_values='NONE')
-ExtractMultiValuesToPoints(XRFsites_proj, NLCD_reclass_PS, bilinear_interpolate_values='NONE')
-tempfix = 'C:/Users/install/Desktop/Seattle_sampling.gdb/XRFsites_proj'
-arcpy.JoinField_management(XRFsites_proj, 'OBJECTID', tempfix, 'OBJECTID',
-                           [f.name for f in arcpy.ListFields(tempfix, '*bing*')])
+ExtractMultiValuesToPoints(XRFsites_proj, heatlist2, bilinear_interpolate_values='NONE')
+# ExtractMultiValuesToPoints(XRFsites_proj, os.path.join(rootdir, 'results/bing/heatbing1902log300.tif'), bilinear_interpolate_values='NONE')
+# ExtractMultiValuesToPoints(XRFsites_proj, NLCD_reclass_PS, bilinear_interpolate_values='NONE')
+# tempfix = 'C:/Users/install/Desktop/Seattle_sampling.gdb/XRFsites_proj'
+# arcpy.JoinField_management(XRFsites_proj, 'OBJECTID', tempfix, 'OBJECTID',
+#                            [f.name for f in arcpy.ListFields(tempfix, '*bing*')])
 arcpy.AddGeometryAttributes_management(XRFsites_proj, 'POINT_X_Y_Z_M', Coordinate_System= arcpy.SpatialReference(4326))
 
 #Get zoning
@@ -459,8 +457,6 @@ arcpy.SpatialJoin_analysis('trees_zoning', 'Tract_2010Census_proj', 'trees_zonin
 
 ########################################################################################################################
 # GET AQI STATIONS HEATMAP VALUES
-# Select candidate species of trees from the City of Seattle's street-tree dataset and extract heatmap values at their
-# location
 ########################################################################################################################
 AQIdir = res = os.path.join(rootdir, 'results/airdata')
 stations = os.path.join(AQIdir, 'airsites.shp')

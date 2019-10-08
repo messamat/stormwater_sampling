@@ -21,7 +21,7 @@ def roadtoheat(site, inshp, res, kernel_dir, keyw, inFID, heatfield, sitedic, ou
         #print('{} features'.format(nshp))
         arcpy.ResetEnvironments()
         arcpy.env.extent = sitedic[site]
-        outras =  os.path.join(outdir, 'OSM_{0}{1}.tif'.format(heatfield, site))
+        outras =  os.path.join(outdir, 'hpmstiger_{0}{1}.tif'.format(heatfield, site))
         if not arcpy.Exists(outras):
             print('{} does not exist, generate heatmap'.format(outras))
             tmpdir = os.path.join(os.path.dirname(outdir),'tmp_{}'.format(str(site)))

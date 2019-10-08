@@ -74,8 +74,14 @@ else:
 albers = arcpy.SpatialReference(102003) #"+proj=aea +lat_1=29.5 +lat_2=45.5 +lat_0=37.5 +lon_0=-96 +x_0=0 +y_0=0 +ellps=GRS80 +datum=NAD83 +units=m +no_defs"
 
 #Get buffer around AQI sites
-AQIsites_bufunion = os.path.join(rootdir, 'results/airdata/airsites_550bufunion.shp')
-AQIgdb = os.path.join(rootdir, 'results/airdata/AQI.gdb')
+AQIdir = os.path.join(rootdir, 'results/airdata')
+AQIsites = os.path.join(AQIdir, 'airsites.shp')
+AQIsites_bufunion = os.path.join(AQIdir, 'airsites_550bufunion.shp')
+AQIgdb = os.path.join(AQIdir, 'AQI.gdb')
+AQIaadttab = os.path.join(AQIdir, 'airsites_aadtlog100')
+AQIbingtab = os.path.join(AQIdir, 'airsites_binglog300')
+AQIimptab = os.path.join(AQIdir, 'airsites_impmean')
+
 #Create gdb for analysis
 if arcpy.Exists(AQIgdb):
     print('Geodatabase already exists')
@@ -790,8 +796,8 @@ arcpy.Project_management(XRFsites, XRFsites_projUTM, UTM10)
 
 #Extract values
 arcpy.env.qualifiedFieldNames = False
-ExtractMultiValuesToPoints(XRFsites_proj, heatlist_webmercator, bilinear_interpolate_values='BILINEAR')
-ExtractMultiValuesToPoints(XRFsites_projUTM, heatlist_UTM, bilinear_interpolate_values='BILINEAR')
+ExtractMultiValuesToPoints(XRFsites_proj, heatlist_webmercator, bilinear_interpolate_values='NONE')
+ExtractMultiValuesToPoints(XRFsites_projUTM, heatlist_UTM, bilinear_interpolate_values='NONE')
 ExtractMultiValuesToPoints(XRFsites_projUTM, NLCD_reclass_PS, bilinear_interpolate_values='NONE')
 arcpy.AddGeometryAttributes_management(XRFsites_proj, 'POINT_X_Y_Z_M', Coordinate_System= arcpy.SpatialReference(4326))
 
@@ -825,18 +831,59 @@ customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=os.pat
               out_gdb=pollutgdbPS, out_var='PSAADT', divnum=100, keyw='log100*', verbose=True)
 
 ########################################################################################################################
-# SUBSET HPMS TIGER AROUND AQI STATIONS
+# SUBSET HPMS TIGER AND GET AADT HEATMAP VALUES AROUND AQI STATIONS
 ########################################################################################################################
 #Intersect roads with buffers
 roadAQI =  os.path.join(AQIgdb, 'AQI_hpmstigerinters')
 arcpy.Intersect_analysis([AQIsites_bufunion, hpmstiger], roadAQI, join_attributes='ALL')
 
-#Get SPD and AADT medians for each fclass
-fclass_SPDADTmedian = pd.read_csv(os.path.join(rootdir, 'results/OSM_SPDADTmedian.csv'))
+##########Run AQI_AADTheatmap.py##################
 
-#Project OSM data
-OSMAQIproj = os.path.join(AQIgdb, 'OSMAQIproj')
-arcpy.Project_management(roadAQI, OSMAQIproj, out_coor_system=AQIsites_bufunion)
+#Problem is: the different projection and extent used in rasterizing hpmstiger for aadt makes the roads have a different
+#structure/shape as the hpmstiger raster used for Seattle and the Puget Sound. this in turns leads to sometimes large
+#differences in the heatmap values after focal statistics...
+
+#For each station, extract aadt_filled
+heataadt_list = [os.path.join(dirpath, file)
+              for (dirpath, dirnames, filenames) in os.walk(AQIdir)
+              for file in filenames if re.search('heataadt_filled.*[.]tif$', file)]
+
+#Get extent of every tile
+heataadt_dict = {}
+for tile in heataadt_list:
+    tilext = arcpy.Describe(tile).Extent
+    heataadt_dict[tile] = [tilext.XMin, tilext.XMax, tilext.YMin, tilext.YMax]
+
+#For each AQI station, find the corresponding aadt heatmap tile and extract value to table
+tablist = []
+if 'aadtlog100' not in [f.name for f in arcpy.ListFields(AQIsites)]:
+    arcpy.AddField_management(AQIsites, 'aadtlog100', 'DOUBLE')
+
+with arcpy.da.UpdateCursor(AQIsites, ['OID@','SHAPE@XY', 'aadtlog100']) as cursor:
+    for row in cursor:
+        print(row[0])
+        for k,v in heataadt_dict.iteritems(): #For each aadt heatmap
+            if row[1][0] > v[0] and row[1][0] < v[1]: #If station X > tile XMin and station X < tile XMax
+                if row[1][1] > v[2] and row[1][1] < v[3]: #If station Y > tile YMin and station Y < tile YMax
+                    # outab = os.path.join(AQIdir, 'heataadt_stationID{0}'.format(row[0]))
+                    # print(outab)
+                    # tablist.append(outab)
+                    outsamp = arcpy.GetCellValue_management(
+                        in_raster=k,
+                        location_point = "{0} {1}".format(row[1][0], row[1][1])).getOutput(0)
+
+                    if outsamp == 'NoData':
+                        row[2] = 0.0
+                    else:
+                        row[2] = outsamp
+                    cursor.updateRow(row)
+                    # outsamp = arcpy.sa.Sample(in_rasters=k, in_location_data=row[2], out_table=outab,
+                    #                 resampling_type= 'BILINEAR')
+
+
+arcpy.Merge_management(tablist, output = AQIaadttab)
+
+
 
 ########################################################################################################################
 # PREPARE LAND USE DATA
@@ -854,3 +901,6 @@ imp_mean.save(NLCD_imp_PS + '_mean.tif')
 arcpy.env.mask = AQIsites_bufunion
 imp_mean = arcpy.sa.FocalStatistics(NLCD_imp, neighborhood = NbrCircle(3, "CELL"), statistics_type= 'MEAN')
 imp_mean.save(NLCD_imp_AQI_mean)
+
+#Extract smoothed imperviousness values at AQI stations
+arcpy.sa.ExtractMultiValuesToPoints(AQIsites, NLCD_imp_AQI_mean, bilinear_interpolate_values = 'NONE')

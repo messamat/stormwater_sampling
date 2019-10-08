@@ -11,8 +11,10 @@ import time
 from heatmap_custom import *
 arcpy.CheckOutExtension("Spatial")
 arcpy.env.overwriteOutput=True
-rootdir = 'F:/Levin_Lab/stormwater'
-res = os.path.join(rootdir, 'results/airdata/tiles')
+# rootdir = 'F:/Levin_Lab/stormwater'
+#res = os.path.join(rootdir, 'results/airdata/tiles')
+#rootdir = 'D:/Mathis/ICSL/stormwater'
+#res = os.path.join(rootdir, 'results/bing')
 
 'Useful resources:' \
 '- https://pythongisandstuff.wordpress.com/2013/07/31/using-arcpy-with-multiprocessing-part-3/' \
@@ -133,7 +135,7 @@ def bingmean(tile, tilediceven, Neven, tiledicodd, Nodd, tiledic2am, N2am, tiled
 if __name__ == '__main__':
     arcpy.env.workspace = res
     # Create list of layers
-    regextile = re.compile("^[0-9]{6}_[0-9]{2}_[0-9]{2}.*[.]tif$")
+    regextile = re.compile("^[0-9]{6}_[0-9]{2}_[0-9]{2}.*mlc[.]tif$")
     mlclist = list(itertools.chain.from_iterable( #To unnest list
         [filter(regextile.search, filenames) for  (dirpath, dirnames, filenames) in os.walk(res)]))
 
