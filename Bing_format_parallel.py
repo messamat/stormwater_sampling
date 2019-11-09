@@ -1,3 +1,5 @@
+#This
+
 import multiprocessing
 from functools import partial
 import arcpy
@@ -9,12 +11,13 @@ import itertools
 from collections import defaultdict
 import time
 from heatmap_custom import *
+
 arcpy.CheckOutExtension("Spatial")
 arcpy.env.overwriteOutput=True
-# rootdir = 'F:/Levin_Lab/stormwater'
-#res = os.path.join(rootdir, 'results/airdata/tiles')
-#rootdir = 'D:/Mathis/ICSL/stormwater'
-#res = os.path.join(rootdir, 'results/bing')
+#rootdir = 'F:/Mathis/Levin_Lab/stormwater'
+#res = #os.path.join(rootdir, 'results/airdata/tiles')
+rootdir = 'F:/Mathis/Levin_Lab/stormwater'
+res = os.path.join(rootdir, 'results/bing')
 
 'Useful resources:' \
 '- https://pythongisandstuff.wordpress.com/2013/07/31/using-arcpy-with-multiprocessing-part-3/' \

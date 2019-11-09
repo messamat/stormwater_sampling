@@ -41,3 +41,5 @@ def customheatmap(kernel_dir, in_raster, out_gdb, out_var, divnum=1, keyw='', ex
                 toc = time.time()
                 if verbose:
                     print('Took {} s'.format(round(toc-tic)))
+            else:
+                print('{} already exists... skip.'.format(outext))
