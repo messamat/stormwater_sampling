@@ -1,7 +1,9 @@
 """"
-Comment: in February 2019, changed Bing congestion post-processing to reclassify green:0, yellow:1, orange:2, red:3 to
+Comment:
+In February 2019, changed Bing congestion post-processing to reclassify green:0, yellow:1, orange:2, red:3 to
 green:1, yellow:2, orangeL3, red:4. This led to regenerating intermediate outputs with 2 as a suffix and bingeuc1902
-or e.g. heat_bing1902log500"""
+or e.g. heat_bing1902log500. Ran it for study area.
+In October 2019, re-ran it for all of Puget Sound"""
 
 import arcpy
 import math
@@ -15,7 +17,7 @@ arcpy.CheckOutExtension("Spatial")
 arcpy.env.overwriteOutput=True
 
 #Set up paths
-rootdir = 'D:/Mathis/ICSL/stormwater/'
+rootdir = 'F:/Mathis/Levin_Lab/stormwater/'
 res= path.join(rootdir, 'results/bing/')
 arcpy.env.workspace=res
 mlclist = [filenames for (dirpath, dirnames, filenames) in walk(res)][0]
@@ -23,13 +25,12 @@ regex=re.compile(".+mlc\.tif$")
 clasfiles = [m.group(0) for l in mlclist for m in [regex.search(l)] if m] #Look into this
 UTM10 = arcpy.SpatialReference(26910)
 
-sites = path.join(rootdir, "data\\field_data\sampling_sites_edit.shp")
+#sites = path.join(rootdir, "data\\field_data\sampling_sites_edit.shp")
 
 #Bing logo masks
 logomask_odd = path.join(rootdir, 'results/boolean_logo.tif')
 logomask_even = path.join(rootdir, 'results/boolean_logoalt.tif')
 
-#Note that 180623_02_45 was deleted because too incomplete and 180625_22_45 is missing tiles (scheduled task crashed)
 gdb = path.join(rootdir,'results/bing/postprocess.gdb')
 if arcpy.Exists(gdb):
     print('Geodatabase already exists')
@@ -45,7 +46,7 @@ traffic2am_ras = path.join(res, 'traffic2am2')
 bingclean_odd = path.join(res, 'bingcleanod2')
 bingclean_even = path.join(res, 'bingcleanev2')
 bingclean_mean = path.join(gdb, 'bingcleanmea2')
-bingeuc = path.join(res, 'bingeucdir/bingeuc2')
+bingeuc = path.join(res, 'bingeuc2')
 
 # arcpy.Project_management(sites, path.join(rootdir, "data\\field_data\sampling_sites_edit_proj.shp"), out_coor_system=path.join(res, clasfiles[0]))
 # sitesbuf =  path.join(rootdir, "data\\field_data\sampling_sites_edit1000mbuffer.shp")
@@ -54,18 +55,18 @@ bingeuc = path.join(res, 'bingeucdir/bingeuc2')
 
 #Reclassify (2 min/hourly image when out of a gdb, then 8 minutes when using gdb?)
 arcpy.env.workspace= gdb
-# if not arcpy.ListRasters('reclas2_*'):
-remap = RemapValue([[1, 0], [2, 1], [3, 0], [4, 0], [5, 3], [6, 4], [7, 0], [8, 2],['NODATA',0]])
-for f in clasfiles:
-    t0 = time.time()
-    print(f)
-    outf = path.join(gdb, 'reclas2_{}'.format(f[:-14]))
-    # if arcpy.Exists(outf):
-    #     print('{} already exists'.format(outf))
-    # else:
-    outReclass = Reclassify(path.join(res, f), 'Value', remap, "DATA")
-    outReclass.save(outf)
-    print(time.time() - t0)
+if not arcpy.ListRasters('reclas2_*'):
+    remap = RemapValue([[1, 0], [2, 1], [3, 0], [4, 0], [5, 3], [6, 4], [7, 0], [8, 2],['NODATA',0]])
+    for f in clasfiles:
+        t0 = time.time()
+        print(f)
+        outf = path.join(gdb, 'reclas2_{}'.format(f[:-14]))
+        if arcpy.Exists(outf):
+            print('{} already exists'.format(outf))
+        else:
+            outReclass = Reclassify(path.join(res, f), 'Value', remap, "DATA")
+            outReclass.save(outf)
+        print(time.time() - t0)
 
 #Create list of layers for odd and even hours to remove bing logo
 reclasfiles = arcpy.ListRasters('reclas2_*')
@@ -86,17 +87,17 @@ if not arcpy.Exists(bingmean_even):
 t1=time.time()
 print(t1-t0)
 
-#Compute mean for all days at 3 am to identify semi-permanent road closures
+#Compute mean for all days at 2 am and 3 am to identify semi-permanent road closures
 if not arcpy.Exists(traffic3am_ras):
     arcpy.env.extent = "MAXOF"
     print('Produce 3 am traffic layer')
-    traffic3am_raslist = arcpy.ListRasters('reclas_*_03_00')
+    traffic3am_raslist = arcpy.ListRasters('reclas2_*_03_00')
     traffic3am_mean  = CellStatistics(traffic3am_raslist, statistics_type='MEAN', ignore_nodata='DATA')
     traffic3am_mean.save(traffic3am_ras)
 if not arcpy.Exists(traffic2am_ras):
     arcpy.env.extent = "MAXOF"
     print('Produce 2 am traffic layer')
-    traffic2am_raslist = arcpy.ListRasters('reclas_*_02_00')
+    traffic2am_raslist = arcpy.ListRasters('reclas2_*_02_00')
     traffic2am_mean  = CellStatistics(traffic2am_raslist, statistics_type='MEAN', ignore_nodata='DATA')
     traffic2am_mean.save(traffic2am_ras)
 
@@ -117,7 +118,7 @@ for xmin, xmax in zip(xpl[:-1], xpl[1:]):
         arcpy.env.extent = tilext
         arcpy.env.snapRaster = ext_template
         #Odd hour tile processing
-        outeuc = bingeuc + str(x)
+        outeuc = "{0}_{1}".format(bingeuc, str(x))
 
         try:
             arcpy.Delete_management(clean_mean)
@@ -131,12 +132,12 @@ for xmin, xmax in zip(xpl[:-1], xpl[1:]):
         if not arcpy.Exists(outeuc):
             print(outeuc)
             clean_mean = Int(1000*
-                             Con((Raster(bingmean_odd)<2.0) & IsNull(Raster(logomask_odd)) & (Raster(traffic3am_ras)<0.4) &
-                             (Raster(bingmean_even)<2.0) & IsNull(Raster(logomask_even)) & (Raster(traffic2am_ras)<0.4),
+                             Con((Raster(bingmean_odd)<2.0) & IsNull(Raster(logomask_odd)) & (Raster(traffic3am_ras)<1.0) &
+                             (Raster(bingmean_even)<2.0) & IsNull(Raster(logomask_even)) & (Raster(traffic2am_ras)<1.0),
                              (Raster(bingmean_odd)+Raster(bingmean_even))/2,
-                             Con((Raster(bingmean_odd)<2.0) & IsNull(Raster(logomask_odd)) & (Raster(traffic3am_ras)<0.4),
+                             Con((Raster(bingmean_odd)<2.0) & IsNull(Raster(logomask_odd)) & (Raster(traffic3am_ras)<1.0),
                                  Raster(bingmean_odd),
-                                 Con((Raster(bingmean_even)<2.0) & IsNull(Raster(logomask_even)) & (Raster(traffic2am_ras)<0.4),
+                                 Con((Raster(bingmean_even)<2.0) & IsNull(Raster(logomask_even)) & (Raster(traffic2am_ras)<1.0),
                                      Raster(bingmean_even)
                                      )
                                  )
@@ -151,13 +152,14 @@ for xmin, xmax in zip(xpl[:-1], xpl[1:]):
 arcpy.ResetEnvironments()
 #arcpy.env.extent = sitesbuf
 if not arcpy.Exists(path.join(gdb, 'bingeuc1902')):
-    arcpy.env.workspace = os.path.join(res, 'bingeucdir')
-    arcpy.MosaicToNewRaster_management(arcpy.ListRasters('bingeuc*'), gdb, 'bingeuc1902', coordinate_system_for_the_raster= UTM10,
+    arcpy.env.workspace = os.path.join(res)
+    arcpy.MosaicToNewRaster_management(arcpy.ListRasters('bingeuc2*'), gdb, 'bingeuc1902',
+                                       #coordinate_system_for_the_raster= arcpy.Describe(arcpy.ListRasters('bingeuc2*')[0]).SpatialReference,
                                        pixel_type = '16_BIT_UNSIGNED', number_of_bands=1, mosaic_method='LAST')
 
 #Create heatmap - focal statistics
 customheatmap(kernel_dir=path.join(rootdir, 'results/bing'), in_raster=path.join(gdb, 'bingeuc1902'),
-              out_gdb = gdb, out_var='bing1902', divnum=100, keyw='log[3]00')
+              out_gdb = gdb, out_var='bing1902', divnum=100, keyw='log[3]00', verbose=True)
 
 
 #Project, and compute heat index out of 100
