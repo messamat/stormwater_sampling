@@ -14,14 +14,11 @@ arcpy.env.overwriteOutput = True
 wa_wtshd = path.join(rootdir, 'data/NOAA_ERMA_20180601/PSwatersheds/shapefile_4047.shp')
 USland = path.join(rootdir, 'data/USA_adm_gdb/USA_adm.gdb/USA_adm0')
 OSMroads = path.join(rootdir, 'data/OSM_WA_20180601/gis_osm_roads_free_1.shp')
-Kingroads = path.join(rootdir, 'data/King_201806\Metro_Transportation_Network_TNET_in_King_County_for_Car_Mode__trans_network_car_line\Metro_Transportation_Network_TNET_in_King_County_for_Car_Mode__trans_network_car_line.shp')
-Pierceroads = path.join(rootdir, 'data/Pierce_20180611/Mobility_Data/Mobility_Data.shp')
-counties = path.join(rootdir, 'data/TIGER2017/tl_2018_us_county/tl_2018_us_county.shp')
 citylims = path.join(rootdir, 'data/WSDOT_GIS_20180508/CityLimits/CityLimits.gdb/CityLimits')
-traffic_wsdot = path.join(rootdir, 'data/WSDOT_TPTTraffic_20180508/2016_TrafficCounts/2016TrafficCounts.gdb/TrafficCounts2016')
+counties = path.join(rootdir, 'data/TIGER2017/tl_2018_us_county/tl_2018_us_county.shp')
+NLCD_imp = os.path.join(rootdir, 'data/NLCD_2016_Impervious_L48_20190405.img') #Based on 2016 dara
+ref_cs =
 
-kernel = NbrWeight('C:/Mathis/ICSL/stormwater/results/logkernell00.txt') #UPDATE
-UTM10 = arcpy.SpatialReference(26910)
 
 #Create gdb
 gdb=path.join(rootdir,'results/PSOSM.gdb')
@@ -33,11 +30,6 @@ else:
 #Output variables
 PSOSM='PSwtshd_OSMroads.shp'
 PSOSM_all='PSwtshd_OSMroads_all.shp'
-OSMPierce = 'PSwtshd_OSMroads_Pierce.shp'
-intersect= path.join(gdb, "buf_inters")
-intersect_stats = path.join(gdb, "buf_inters_stats")
-OSMPierce_datajoin = path.join(gdb, 'OSMPierce_datajoin')
-OSMWSDOT_datajoin = path.join(gdb, 'OSM_WSDOT_joinstats')
 
 #######################################################################################################################
 #Subset puget sound watersheds
@@ -76,37 +68,5 @@ arcpy.Delete_management('citylims_lyr')
 arcpy.MakeFeatureLayer_management(counties, 'counties_lyr')
 arcpy.SelectLayerByLocation_management('counties_lyr', 'INTERSECT', 'PScitylimits.shp', selection_type='NEW_SELECTION')
 arcpy.SelectLayerByAttribute_management('counties_lyr', 'ADD_TO_SELECTION', "COUNTYNS='01531927'") #Add Lewis county
-arcpy.CopyFeatures_management('counties_lyr', 'PScounties')
+arcpy.CopyFeatures_management('counties_lyr', 'PScounties.shp')
 arcpy.Delete_management('counties_lyr')
-
-##########################################################################################################################################
-#Prepare OSM data to create heatmap based on roads functional class for all Puget Sound OSM roads
-
-arcpy.env.workspace = gdb
-
-#Select OSM roads, but this map with service roads, as enough through traffic to potentially have some impact
-arcpy.MakeFeatureLayer_management(OSMroads, 'OSMroads_lyr')
-np.unique([row[0] for row in arcpy.da.SearchCursor('OSMroads_lyr', ['fclass'])])
-sel = "{} IN ('motorway','motorway_link','living_street','primary','primary_link','residential','secondary','secondary_link'," \
-      "'tertiary','tertiary_link','trunk','trunk_link','unclassified','unknown', 'service')".format('"fclass"')
-arcpy.SelectLayerByAttribute_management('OSMroads_lyr', 'NEW_SELECTION', sel)
-arcpy.Intersect_analysis(['OSMroads_lyr', 'PSwtshd_dissolve.shp'],out_feature_class=PSOSM_all)
-arcpy.Delete_management('OSMroads_lyr')
-
-# Join OSM and Pierce County + WSDOT traffic counts data to improve interpolation of speed limits
-# and traffic volume within road fclasses
-#Subselect OSM roads for Pierce County
-arcpy.MakeFeatureLayer_management(counties, 'counties_lyr')
-arcpy.SelectLayerByAttribute_management('counties_lyr', 'NEW_SELECTION', "COUNTYNS='01529159'")
-arcpy.Clip_analysis(PSOSM_all, 'counties_lyr', OSMPierce)
-
-SpatialJoinLines_LargestOverlap(target_features= OSMPierce, join_features=Pierceroads, out_fc = OSMPierce_datajoin,
-                                outgdb=gdb, bufsize='10 meters', keep_all=True,
-                                fields_select=['RoadNumber', 'RoadName', 'FFC', 'FFCDesc', 'ADTSource', 'ADT',
-                                               'ADTYear', 'SpeedLimit'])
-#Join OSM with WSDOT traffic counts
-arcpy.SpatialJoin_analysis(traffic_wsdot, PSOSM_all, path.join(gdb, 'OSM_WSDOT_join'), 'JOIN_ONE_TO_ONE', 'KEEP_COMMON',
-                           match_option='CLOSEST_GEODESIC', search_radius='20 meters', distance_field_name='joindist')
-arcpy.Statistics_analysis(path.join(gdb, 'OSM_WSDOT_join'),OSMWSDOT_datajoin ,
-                          statistics_fields= [['AADT', 'MEAN'],['DirectionOfTravel', 'FIRST'],['fclass', 'FIRST']],
-                          case_field = 'osm_id')

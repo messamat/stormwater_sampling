@@ -42,8 +42,8 @@ trees = os.path.join(rootdir, 'data/CitySeattle_20180601/Trees/Trees.shp')
 zoning = os.path.join(rootdir, 'data/CitySeattle_20180626/City_of_Seattle_Zoning/WGS84/City_of_Seattle_Zoning.shp')
 censustract = os.path.join(rootdir, 'data/TIGER2017/Profile-County_Tract/Profile-County_Tract.gdb/Tract_2010Census_DP1')
 heat_bing = os.path.join(rootdir, 'results/bing/bingmean1806_Seattle_heat.tif')
-NLCD_reclass = os.path.join(rootdir, 'results/LU.gdb/NLCD_reclass_final')
-NLCD_imp = os.path.join(rootdir, 'data/nlcd_2011_impervious_2011_edition_2014_10_10/nlcd_2011_impervious_2011_edition_2014_10_10.img')
+NLCD_reclass = os.path.join(rootdir, 'results/LU.gdb/NLCD_reclass_final') #Based on 2011 data
+NLCD_imp = os.path.join(rootdir, 'data/NLCD_2016_Impervious_L48_20190405.img') #Based on 2016 dara
 PSwatershed = os.path.join(rootdir, 'results/PSwtshd_dissolve.shp')
 cities = os.path.join(rootdir, 'results/PScitylimits.shp')
 counties = os.path.join(rootdir, 'data/TIGER2017/tl_2018_us_county/tl_2018_us_county.shp')
@@ -53,8 +53,12 @@ res = arcpy.GetRasterProperties_management(template_ras, 'CELLSIZEX')
 
 PSgdb=os.path.join(rootdir,'results/PSOSM.gdb')
 PSOSM_all= os.path.join(rootdir, 'results/PSwtshd_OSMroads_all.shp')
-OSMPierce_datajoin = os.path.join(PSgdb, 'OSMPierce_datajoin')
-OSMWSDOT_datajoin = os.path.join(PSgdb, 'OSM_WSDOT_joinstats')
+OSMroads = os.path.join(rootdir, 'data/OSM_WA_20180601/gis_osm_roads_free_1.shp')
+Kingroads = os.path.join(rootdir, 'data/King_201806\Metro_Transportation_Network_TNET_in_King_County_for_Car_Mode__trans_network_car_line\Metro_Transportation_Network_TNET_in_King_County_for_Car_Mode__trans_network_car_line.shp')
+Pierceroads = os.path.join(rootdir, 'data/Pierce_20180611/Mobility_Data/Mobility_Data.shp')
+traffic_wsdot = os.path.join(rootdir, 'data/WSDOT_TPTTraffic_20180508/2016_TrafficCounts/2016TrafficCounts.gdb/TrafficCounts2016')
+kernel = NbrWeight('C:/Mathis/ICSL/stormwater/results/logkernell00.txt') #UPDATE
+
 
 STgtfs = os.path.join(rootdir, 'data\SoundTransit_201812\gtfs_puget_sound_consolidated.zip')
 transitwiki_dir = os.path.join(rootdir, 'data/TransitWiki201812')
@@ -85,6 +89,12 @@ else:
 arcpy.env.workspace = gdb
 
 #New variables
+OSMPierce = 'PSwtshd_OSMroads_Pierce.shp'
+intersect= os.path.join(gdb, "buf_inters")
+intersect_stats = os.path.join(gdb, "buf_inters_stats")
+OSMPierce_datajoin = os.path.join(gdb, 'OSMPierce_datajoin')
+OSMWSDOT_datajoin = os.path.join(gdb, 'OSM_WSDOT_joinstats')
+
 roadstraffic = 'Seattle_roadstraffic'
 roadstraffic_avg =roadstraffic+'_AADT'
 NLCD_reclass_PS = os.path.join(rootdir, 'results/NLCD_reclass_final_PS.tif')
@@ -112,6 +122,40 @@ XRFsites_proj = os.path.join(gdb, 'XRFsites_proj')
 ########################################################################################################################
 # PREPARE VARIABLES TO CREATE HEATMAPS: FUNCTIONAL-CLASS BASED AADT AND SPEED LIMIT, SLOPE, AND TRANSIT ROUTES
 ########################################################################################################################
+
+#-----------------------------------------------------------------------------------------------------------------------
+# Prepare OSM data to create heatmap based on roads functional class for all Puget Sound OSM roads
+#-----------------------------------------------------------------------------------------------------------------------
+arcpy.env.workspace = gdb
+
+#Select OSM roads, but this map with service roads, as enough through traffic to potentially have some impact
+arcpy.MakeFeatureLayer_management(OSMroads, 'OSMroads_lyr')
+np.unique([row[0] for row in arcpy.da.SearchCursor('OSMroads_lyr', ['fclass'])])
+sel = "{} IN ('motorway','motorway_link','living_street','primary','primary_link','residential','secondary','secondary_link'," \
+      "'tertiary','tertiary_link','trunk','trunk_link','unclassified','unknown', 'service')".format('"fclass"')
+arcpy.SelectLayerByAttribute_management('OSMroads_lyr', 'NEW_SELECTION', sel)
+arcpy.Intersect_analysis(['OSMroads_lyr', 'PSwtshd_dissolve.shp'],out_feature_class=PSOSM_all)
+arcpy.Delete_management('OSMroads_lyr')
+
+# Join OSM and Pierce County + WSDOT traffic counts data to improve interpolation of speed limits
+# and traffic volume within road fclasses
+#Subselect OSM roads for Pierce County
+arcpy.MakeFeatureLayer_management(counties, 'counties_lyr')
+arcpy.SelectLayerByAttribute_management('counties_lyr', 'NEW_SELECTION', "COUNTYNS='01529159'")
+arcpy.Clip_analysis(PSOSM_all, 'counties_lyr', OSMPierce)
+
+SpatialJoinLines_LargestOverlap(target_features= OSMPierce, join_features=Pierceroads, out_fc = OSMPierce_datajoin,
+                                outgdb=gdb, bufsize='10 meters', keep_all=True,
+                                fields_select=['RoadNumber', 'RoadName', 'FFC', 'FFCDesc', 'ADTSource', 'ADT',
+                                               'ADTYear', 'SpeedLimit'])
+#Join OSM with WSDOT traffic counts
+arcpy.SpatialJoin_analysis(traffic_wsdot, PSOSM_all, os.path.join(gdb, 'OSM_WSDOT_join'), 'JOIN_ONE_TO_ONE', 'KEEP_COMMON',
+                           match_option='CLOSEST_GEODESIC', search_radius='20 meters', distance_field_name='joindist')
+arcpy.Statistics_analysis(os.path.join(gdb, 'OSM_WSDOT_join'),OSMWSDOT_datajoin ,
+                          statistics_fields= [['AADT', 'MEAN'],['DirectionOfTravel', 'FIRST'],['fclass', 'FIRST']],
+                          case_field = 'osm_id')
+
+
 #-----------------------------------------------------------------------------------------------------------------------
 #ASSIGN FUNCTIONAL CLASS-BASED MEDIANS OF AADT AND SPEED LIMIT TO OSM FOR PUGET SOUND
 #-----------------------------------------------------------------------------------------------------------------------
@@ -370,8 +414,8 @@ with arcpy.da.UpdateCursor(PSOSM_elv, ['gradient_composite','gradient19_smooth',
 # PREPARE LAND USE DATA
 ########################################################################################################################
 #Export NLCD data to Puget Sound scale
-arcpy.env.extent = PSwatershed
-arcpy.ProjectRaster_management(NLCD_reclass, NLCD_reclass_PS, UTM10, resampling_type='NEAREST')
+arcpy.env.snapRaster = NLCD_imp
+arcpy.Clip_management(in_raster=NLCD_reclass, rectangle=PSwatershed, out_raster=NLCD_reclass_PS)
 #Export NLCD impervious data
 #NLCD_imp = "D:\ICSL\stormwater\data\\nlcd_2011_impervious_2011_edition_2014_10_10\\nlcd_2011_impervious_2011_edition_2014_10_10.img"
 arcpy.ProjectRaster_management(NLCD_imp, NLCD_imp_PS, UTM10, resampling_type='BILINEAR')
@@ -395,7 +439,8 @@ heat_spdlm_int.save('heat_spdlm_int')
 arcpy.CopyRaster_management('heat_spdlm_int', os.path.join(rootdir, 'results/heatspdlm_int'))
 
 #Seattle AADT
-arcpy.PolylineToRaster_conversion(roadstraffic_avg, value_field='AADT_interp', out_rasterdataset='Seattle_AADT', priority_field='AADT_interp',cellsize=res)
+arcpy.PolylineToRaster_conversion(roadstraffic_avg, value_field='AADT_interp', out_rasterdataset='Seattle_AADT',
+                                  priority_field='AADT_interp',cellsize=res)
 customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=os.path.join(gdb, 'Seattle_AADT'),
               out_gdb = gdb, out_var='AADT', divnum=100, keyw='')
 
@@ -455,53 +500,53 @@ arcpy.SpatialJoin_analysis('trees_proj', 'zoning_proj', 'trees_zoning', join_ope
 arcpy.Project_management(censustract, 'Tract_2010Census_proj', UTM10)
 arcpy.SpatialJoin_analysis('trees_zoning', 'Tract_2010Census_proj', 'trees_zoning_census', join_operation='JOIN_ONE_TO_ONE', match_option='WITHIN')
 
-########################################################################################################################
-# GET AQI STATIONS HEATMAP VALUES
-########################################################################################################################
-AQIdir = res = os.path.join(rootdir, 'results/airdata')
-stations = os.path.join(AQIdir, 'airsites.shp')
-# Create list of layers
-regexheatbing = re.compile("heatbing.*[.]tif$")
-heatbinglist = list(itertools.chain.from_iterable( #To unnest list
-    [filter(regexheatbing.search, [os.path.join(dirpath, file) for file in filenames])
-     for (dirpath, dirnames, filenames) in os.walk(AQIdir)]))
-regexheatSPD = re.compile("heatfclassSPD.*[.]tif$")
-heatSPDlist = list(itertools.chain.from_iterable( #To unnest list
-    [filter(regexheatSPD.search, [os.path.join(dirpath, file) for file in filenames])
-     for (dirpath, dirnames, filenames) in os.walk(AQIdir)]))
-
-#Two options: either run through each tile, set extent, then extract single value to points, OR extract multivalues to points on all points then melt table
-#Get extent from raster
-heatbingdic = {}
-for tile in heatbinglist:
-    print(tile)
-    #tic = time.time()
-    arcpy.env.extent = tile
-    for row in arcpy.da.SearchCursor(arcpy.sa.Sample(tile, stations, r'in_memory/bingpt'),
-                                     ['airsites', os.path.splitext(os.path.basename(tile))[0]]):
-        if row[1] is not None:
-            heatbingdic[row[0]] = row[1]
-    #print(time.time() - tic)
-
-heatSPDdic = {}
-for tile in heatSPDlist:
-    print(tile)
-    #tic = time.time()
-    arcpy.env.extent = tile
-    for row in arcpy.da.SearchCursor(arcpy.sa.Sample(tile, stations, r'in_memory/SPDpt'),
-                                     ['airsites', os.path.splitext(os.path.basename(tile))[0]]):
-        if row[1] is not None:
-            heatSPDdic[row[0]] = row[1]
-    #print(time.time() - tic)
-
-arcpy.AddField_management(stations, field_name='hbglog300', field_type = 'FLOAT')
-arcpy.AddField_management(stations, field_name='hSPDlog300', field_type = 'FLOAT')
-with arcpy.da.UpdateCursor(stations, ['FID', 'hbglog300', 'hSPDlog300']) as cursor:
-    for row in cursor:
-        # print(row[0])
-        # if int(row[0]) in heatbingdic:
-        #     #print(row[0])
-        #     row[1] = heatbingdic[int(row[0])]
-        if int(row[0]) in heatSPDdic:
-            row[2] = heatSPDdic[int(row[0])]
-        cursor.updateRow(row)
+# ########################################################################################################################
+# # GET AQI STATIONS HEATMAP VALUES
+# ########################################################################################################################
+# AQIdir = res = os.path.join(rootdir, 'results/airdata')
+# stations = os.path.join(AQIdir, 'airsites.shp')
+# # Create list of layers
+# regexheatbing = re.compile("heatbing.*[.]tif$")
+# heatbinglist = list(itertools.chain.from_iterable( #To unnest list
+#     [filter(regexheatbing.search, [os.path.join(dirpath, file) for file in filenames])
+#      for (dirpath, dirnames, filenames) in os.walk(AQIdir)]))
+# regexheatSPD = re.compile("heatfclassSPD.*[.]tif$")
+# heatSPDlist = list(itertools.chain.from_iterable( #To unnest list
+#     [filter(regexheatSPD.search, [os.path.join(dirpath, file) for file in filenames])
+#      for (dirpath, dirnames, filenames) in os.walk(AQIdir)]))
+#
+# #Two options: either run through each tile, set extent, then extract single value to points, OR extract multivalues to points on all points then melt table
+# #Get extent from raster
+# heatbingdic = {}
+# for tile in heatbinglist:
+#     print(tile)
+#     #tic = time.time()
+#     arcpy.env.extent = tile
+#     for row in arcpy.da.SearchCursor(arcpy.sa.Sample(tile, stations, r'in_memory/bingpt'),
+#                                      ['airsites', os.path.splitext(os.path.basename(tile))[0]]):
+#         if row[1] is not None:
+#             heatbingdic[row[0]] = row[1]
+#     #print(time.time() - tic)
+#
+# heatSPDdic = {}
+# for tile in heatSPDlist:
+#     print(tile)
+#     #tic = time.time()
+#     arcpy.env.extent = tile
+#     for row in arcpy.da.SearchCursor(arcpy.sa.Sample(tile, stations, r'in_memory/SPDpt'),
+#                                      ['airsites', os.path.splitext(os.path.basename(tile))[0]]):
+#         if row[1] is not None:
+#             heatSPDdic[row[0]] = row[1]
+#     #print(time.time() - tic)
+#
+# arcpy.AddField_management(stations, field_name='hbglog300', field_type = 'FLOAT')
+# arcpy.AddField_management(stations, field_name='hSPDlog300', field_type = 'FLOAT')
+# with arcpy.da.UpdateCursor(stations, ['FID', 'hbglog300', 'hSPDlog300']) as cursor:
+#     for row in cursor:
+#         # print(row[0])
+#         # if int(row[0]) in heatbingdic:
+#         #     #print(row[0])
+#         #     row[1] = heatbingdic[int(row[0])]
+#         if int(row[0]) in heatSPDdic:
+#             row[2] = heatSPDdic[int(row[0])]
+#         cursor.updateRow(row)
