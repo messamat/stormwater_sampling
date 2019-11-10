@@ -51,12 +51,15 @@ if not os.path.exists(sitetab):
     print('Site tab does not exist...')
     dlfile('https://aqs.epa.gov/aqsweb/airdata/aqs_sites.zip', AQIdir)
 sites = pd.read_csv(sitetab)
+NLCD_imp = os.path.join(rootdir, 'data/NLCD_2016_Impervious_L48_20190405.img') #Based on 2016 dara
+ref_cs = arcpy.Describe(NLCD_imp).SpatialReference
 
 #Output variables
 outdir = os.path.join(rootdir, 'results/airdata')
 if not os.path.isdir(outdir):
     os.mkdir(outdir)
 sites_out = os.path.join(outdir, 'airsites.shp')
+sites_out_lambers = os.path.join(outdir, 'airsites_lambers.shp')
 sites_outbuf = os.path.join(outdir, 'airsites_550buf.shp')
 sites_outbufdis = os.path.join(outdir, 'airsites_550bufdis.shp')
 sites_outbufunion = os.path.join(outdir, 'airsites_550bufunion.shp')
@@ -355,16 +358,31 @@ sites_wgs84 = pdtogpd_datum(sites_chem, 'WGS84')
 sites_nad27 = pdtogpd_datum(sites_chem, 'NAD27')
 sites_nad83 = pdtogpd_datum(sites_chem, 'NAD83')
 
-#Project them all to same projection as meteorological data (Lambert Comformal Conic)
+#Project them all to same projection as meteorological data for extraction (Lambert Comformal Conic)
+sites_gpd_lambers = pd.concat([sites_wgs84.to_crs(crs=lcc_proj4), sites_nad27.to_crs(crs=lcc_proj4), sites_nad83.to_crs(crs=lcc_proj4)])
+sites_gpd_lambers['x'], sites_gpd_lambers['y'] = sites_gpd_lambers.geometry.x, sites_gpd_lambers.geometry.y
+#Remove outliers with lon=0
+sites_gpd_lambers['Longitude'].describe()
+sites_gpd_lambers = sites_gpd_lambers[sites_gpd_lambers['Longitude'] != 0]
+
+#Project them all to same projection as NLCD data (and all other data)
+aea_proj4 = ("+proj=aea +lat_1={0} +lat_2={1} +lat_0={2} +lon_0={3} +x_0={4} +y_0={5} "
+             "+ellps=GRS80 +datum=NAD83 +units=m +no_def".
+             format(ref_cs.standardParallel1,
+                    ref_cs.standardParallel2,
+                    ref_cs.latitudeOfOrigin,
+                    ref_cs.centralMeridian,
+                    ref_cs.falseEasting,
+                    ref_cs.falseNorthing))
 sites_gpd = pd.concat([sites_wgs84.to_crs(crs=lcc_proj4), sites_nad27.to_crs(crs=lcc_proj4), sites_nad83.to_crs(crs=lcc_proj4)])
-sites_gpd['x'], sites_gpd['y'] = sites_gpd.centroid.x, sites_gpd.centroid.y
+sites_gpd['x'], sites_gpd['y'] = sites_gpd.geometry.x, sites_gpd.geometry.y
 #Remove outliers with lon=0
 sites_gpd['Longitude'].describe()
-sites_gpd = sites_gpd[sites_gpd['Longitude'] != 0]
+sites_gpd = sites_gpd_lambers[sites_gpd_lambers['Longitude'] != 0]
 
 #Create 550 m radius buffers and dissolve them
 sites_buf = sites_gpd['geometry'].buffer(distance=550)
-sites_bufgpd = gpd.GeoDataFrame(sites_buf, crs=lcc_proj4).rename(columns={0:'geometry'}).set_geometry('geometry')
+sites_bufgpd = gpd.GeoDataFrame(sites_buf, crs=aea_proj4).rename(columns={0:'geometry'}).set_geometry('geometry')
 
 #Dissolve all
 sites_bufgpd['diss'] = 1
@@ -376,6 +394,7 @@ sites_bufunion = gpd.GeoDataFrame([polygon for polygon in sites_bufgpd.unary_uni
 
 #Output to shapefile
 sites_gpd.to_file(sites_out, driver = 'ESRI Shapefile')
+sites_gpd_lambers.to_file(sites_out_lambers, driver = 'ESRI Shapefile')
 sites_bufgpd.to_file(sites_outbuf, driver = 'ESRI Shapefile')
 sites_bufdis.to_file(sites_outbufdis, driver = 'ESRI Shapefile')
 sites_bufunion.to_file(sites_outbufunion, driver = 'ESRI Shapefile')
@@ -417,7 +436,7 @@ if not os.path.exists(airdat_uniquedfexp_pickle):
     airdat_uniquedf['date'] = airdat_uniquedf['Date Local']
 
     # Get projected x and y coordinates for each site
-    airdat_uniquedfproj = airdat_uniquedf.merge(pd.DataFrame(sites_gpd.drop(columns='geometry')), on='UID', how='inner')
+    airdat_uniquedfproj = airdat_uniquedf.merge(pd.DataFrame(sites_gpd_lambers.drop(columns='geometry')), on='UID', how='inner')
 
     # Expand df to extract 3-hourly meteorological averages
     airdat_uniquedfexp = airdat_uniquedfproj.reindex(airdat_uniquedfproj.index.repeat(8))

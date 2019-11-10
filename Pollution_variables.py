@@ -50,6 +50,7 @@ counties = os.path.join(rootdir, 'data/TIGER2017/tl_2018_us_county/tl_2018_us_co
 
 template_ras = os.path.join(rootdir,'results/bing/181204_02_00_class_mlc.tif')
 res = arcpy.GetRasterProperties_management(template_ras, 'CELLSIZEX')
+ref_cs = arcpy.Describe(NLCD_imp).SpatialReference
 
 PSgdb=os.path.join(rootdir,'results/PSOSM.gdb')
 PSOSM_all= os.path.join(rootdir, 'results/PSwtshd_OSMroads_all.shp')
@@ -99,7 +100,6 @@ roadstraffic = 'Seattle_roadstraffic'
 roadstraffic_avg =roadstraffic+'_AADT'
 NLCD_reclass_PS = os.path.join(rootdir, 'results/NLCD_reclass_final_PS.tif')
 NLCD_imp_PS = os.path.join(rootdir, 'results/nlcd_imp_ps')
-UTM10 = arcpy.SpatialReference(26910)
 OSMSeattle = os.path.join(PSgdb, 'PSwtshd_OSMroads_Seattle')
 OSMSeattle_datajoin = os.path.join(PSgdb, 'OSMSeattle_datajoin')
 OSMKing_datajoin = os.path.join(PSgdb, 'OSMKing_datajoin')
@@ -120,9 +120,20 @@ PStransitras = os.path.join(rootdir, 'results/transit.gdb/PStransit_ras')
 XRFsites_proj = os.path.join(gdb, 'XRFsites_proj')
 
 ########################################################################################################################
+# PREPARE LAND USE DATA
+########################################################################################################################
+#Export NLCD data to Puget Sound scale
+arcpy.env.snapRaster = NLCD_imp
+arcpy.Clip_management(in_raster=NLCD_reclass, rectangle=PSwatershed, out_raster=NLCD_reclass_PS)
+#Export NLCD impervious data
+arcpy.Clip_management(in_raster=NLCD_imp, rectangle=PSwatershed, out_raster=NLCD_imp_PS)
+#Compute focal stats
+imp_mean = arcpy.sa.FocalStatistics(NLCD_imp_PS, neighborhood = NbrCircle(3, "CELL"), statistics_type= 'MEAN')
+imp_mean.save(NLCD_imp_PS + '_mean.tif')
+
+########################################################################################################################
 # PREPARE VARIABLES TO CREATE HEATMAPS: FUNCTIONAL-CLASS BASED AADT AND SPEED LIMIT, SLOPE, AND TRANSIT ROUTES
 ########################################################################################################################
-
 #-----------------------------------------------------------------------------------------------------------------------
 # Prepare OSM data to create heatmap based on roads functional class for all Puget Sound OSM roads
 #-----------------------------------------------------------------------------------------------------------------------
@@ -259,7 +270,7 @@ with arcpy.da.UpdateCursor(PSOSM_all, ['fclass','fclassADT', 'fclassSPD']) as cu
         cursor.updateRow(row)
 
 #Project OSM data
-arcpy.Project_management(PSOSM_all, PSOSM_allproj, out_coor_system=UTM10)
+arcpy.Project_management(PSOSM_all, PSOSM_allproj, out_coor_system=ref_cs)
 
 #-----------------------------------------------------------------------------------------------------------------------
 # PREPARE TRANSIT DATA TO CREATE HEATMAP BASED ON BUS ROUTES
@@ -293,7 +304,7 @@ arcpy.Merge_management(arcpy.ListFeatureClasses('*_routes'), output = PStransit)
 arcpy.MakeFeatureLayer_management(PStransit, 'PStransit_lyr',
                                   where_clause= '(route_type = 3) AND (MIN_service_len > 1) AND (SUM_adjustnum > 0)')
 arcpy.CopyFeatures_management('PStransit_lyr', PStransitbus)
-arcpy.Project_management(PStransitbus, PStransitbus_proj, UTM10)
+arcpy.Project_management(PStransitbus, PStransitbus_proj, ref_cs)
 
 #Create raster of weekly number of buses at the same resolution as bing data
 # Convert weekly number of buses to integer
@@ -306,7 +317,7 @@ arcpy.SplitLine_management(PStransitbus_proj, PStransitbus_proj + '_split') #Spl
 arcpy.FindIdentical_management(PStransitbus_proj + '_split', "explFindID", "Shape") #Find overlapping segments and make them part of a group (FEAT_SEQ)
 arcpy.MakeFeatureLayer_management(PStransitbus_proj + '_split', "intlyr")
 arcpy.AddJoin_management("intlyr", arcpy.Describe("intlyr").OIDfieldName, "explFindID", "IN_FID", "KEEP_ALL")
-arcpy.Dissolve_management("intlyr", PStransitbus_splitdiss, dissolve_field='explFindID.FEAT_SEQ',
+arcpy.Dissolve_management("intlyr", PStransitbus_splitdiss, dissolve_field='explFindID:FEAT_SEQ',
                           statistics_fields=[[os.path.split(PStransitbus_proj)[1] + '_split.adjustnum_int', 'SUM']]) #Dissolve overlapping segments
 arcpy.RepairGeometry_management(PStransitbus_splitdiss, delete_null = 'DELETE_NULL') #sometimes creates empty geom
 #Get the length of a half pixel diagonal to create buffers for
@@ -409,19 +420,6 @@ with arcpy.da.UpdateCursor(PSOSM_elv, ['gradient_composite','gradient19_smooth',
         else:
             pass
         cursor.updateRow(row)
-
-########################################################################################################################
-# PREPARE LAND USE DATA
-########################################################################################################################
-#Export NLCD data to Puget Sound scale
-arcpy.env.snapRaster = NLCD_imp
-arcpy.Clip_management(in_raster=NLCD_reclass, rectangle=PSwatershed, out_raster=NLCD_reclass_PS)
-#Export NLCD impervious data
-#NLCD_imp = "D:\ICSL\stormwater\data\\nlcd_2011_impervious_2011_edition_2014_10_10\\nlcd_2011_impervious_2011_edition_2014_10_10.img"
-arcpy.ProjectRaster_management(NLCD_imp, NLCD_imp_PS, UTM10, resampling_type='BILINEAR')
-#Compute focal stats
-imp_mean = arcpy.sa.FocalStatistics(NLCD_imp_PS, neighborhood = NbrCircle(3, "CELL"), statistics_type= 'MEAN')
-imp_mean.save(NLCD_imp_PS + '_mean.tif')
 
 ########################################################################################################################
 # CREATE HEATMAPS

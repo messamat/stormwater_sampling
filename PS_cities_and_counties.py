@@ -5,7 +5,7 @@ import numpy as np
 from os import *
 from SpatialJoinLines_LargestOverlap import *
 
-rootdir = 'C:/Mathis/ICSL/stormwater/'
+rootdir = 'D:/Mathis/ICSL/stormwater/'
 resdir  = path.join(rootdir,'results')
 arcpy.env.workspace = resdir
 arcpy.CheckOutExtension("Spatial")
@@ -17,8 +17,7 @@ OSMroads = path.join(rootdir, 'data/OSM_WA_20180601/gis_osm_roads_free_1.shp')
 citylims = path.join(rootdir, 'data/WSDOT_GIS_20180508/CityLimits/CityLimits.gdb/CityLimits')
 counties = path.join(rootdir, 'data/TIGER2017/tl_2018_us_county/tl_2018_us_county.shp')
 NLCD_imp = os.path.join(rootdir, 'data/NLCD_2016_Impervious_L48_20190405.img') #Based on 2016 dara
-ref_cs =
-
+ref_cs = arcpy.Describe(NLCD_imp).SpatialReference
 
 #Create gdb
 gdb=path.join(rootdir,'results/PSOSM.gdb')
@@ -35,7 +34,7 @@ PSOSM_all='PSwtshd_OSMroads_all.shp'
 #Subset puget sound watersheds
 arcpy.MakeFeatureLayer_management(wa_wtshd, out_layer='wtshd_lyr')
 arcpy.SelectLayerByAttribute_management('wtshd_lyr', 'NEW_SELECTION', "PUGETSOUND = 'Y'")
-arcpy.CopyFeatures_management('wtshd_lyr', 'PSwtshd.shp')
+arcpy.Project_management('wtshd_lyr', 'PSwtshd.shp', ref_cs)
 arcpy.Delete_management('wtshd_lyr')
 
 #Dissolve Puget Sound watersheds into one polygon
@@ -43,7 +42,7 @@ arcpy.Dissolve_management('PSwtshd.shp', 'PSwtshd_dissolve.shp')
 
 #Erase non-terrestrial areas from Puget Sound polygon
 #proj = arcpy.Describe(wa_wtshd).spatialReference
-arcpy.Project_management(USland, 'USA_adm_proj.shp', out_coor_system=UTM10)
+arcpy.Project_management(USland, 'USA_adm_proj.shp', out_coor_system=ref_cs)
 arcpy.env.extent = arcpy.Describe(wa_wtshd).extent
 arcpy.Buffer_analysis('USA_adm_proj.shp', out_feature_class='USbuf.shp', buffer_distance_or_field='100 meters')
 arcpy.Intersect_analysis(in_features=['PSwtshd_dissolve.shp',USland], out_feature_class='PSwtshd_extrude')

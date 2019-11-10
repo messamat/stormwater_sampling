@@ -17,13 +17,17 @@ arcpy.CheckOutExtension("Spatial")
 arcpy.env.overwriteOutput=True
 
 #Set up paths
-rootdir = 'F:/Mathis/Levin_Lab/stormwater/'
+rootdir = 'D:/Mathis/ICSL/stormwater/'
 res= path.join(rootdir, 'results/bing/')
+NLCD_imp = os.path.join(rootdir, 'data/NLCD_2016_Impervious_L48_20190405.img') #Based on 2016 dara
+ref_cs = arcpy.Describe(NLCD_imp).SpatialReference
+sites_bufunion = os.path.join(rootdir, 'results/airdata/airsites_550bufunion.shp')
+
 arcpy.env.workspace=res
 mlclist = [filenames for (dirpath, dirnames, filenames) in walk(res)][0]
 regex=re.compile(".+mlc\.tif$")
 clasfiles = [m.group(0) for l in mlclist for m in [regex.search(l)] if m] #Look into this
-UTM10 = arcpy.SpatialReference(26910)
+
 
 #sites = path.join(rootdir, "data\\field_data\sampling_sites_edit.shp")
 
@@ -46,7 +50,7 @@ traffic2am_ras = path.join(res, 'traffic2am2')
 bingclean_odd = path.join(res, 'bingcleanod2')
 bingclean_even = path.join(res, 'bingcleanev2')
 bingclean_mean = path.join(gdb, 'bingcleanmea2')
-bingeuc = path.join(res, 'bingeuc2')
+bingeuc = path.join(res, 'bingeuc1902')
 
 # arcpy.Project_management(sites, path.join(rootdir, "data\\field_data\sampling_sites_edit_proj.shp"), out_coor_system=path.join(res, clasfiles[0]))
 # sitesbuf =  path.join(rootdir, "data\\field_data\sampling_sites_edit1000mbuffer.shp")
@@ -150,7 +154,6 @@ for xmin, xmax in zip(xpl[:-1], xpl[1:]):
 
 #Mosaic all tiles
 arcpy.ResetEnvironments()
-#arcpy.env.extent = sitesbuf
 if not arcpy.Exists(path.join(gdb, 'bingeuc1902')):
     arcpy.env.workspace = os.path.join(res)
     arcpy.MosaicToNewRaster_management(arcpy.ListRasters('bingeuc2*'), gdb, 'bingeuc1902',
@@ -158,12 +161,17 @@ if not arcpy.Exists(path.join(gdb, 'bingeuc1902')):
                                        pixel_type = '16_BIT_UNSIGNED', number_of_bands=1, mosaic_method='LAST')
 
 #Create heatmap - focal statistics
+arcpy.env.extent = sites_bufunion
+arcpy.env.snapRaster = bingeuc
 customheatmap(kernel_dir=path.join(rootdir, 'results/bing'), in_raster=path.join(gdb, 'bingeuc1902'),
-              out_gdb = gdb, out_var='bing1902', divnum=100, keyw='log[3]00', verbose=True)
+              out_gdb = gdb, out_var='bing1902', divnum=100, keyw='(pow|log)(([1235]00)|50)(_[123])*', verbose=True)
 
+#Project
+arcpy.env.workspace = gdb
+heatbing_list = arcpy.ListRasters('heatbing1902*')
+for ras in heatbing_list:
+    arcpy.ProjectRaster_management(path.join(gdb, ras), path.join(gdb, ras + 'proj'), ref_cs, resampling_type='NEAREST') #Project
 
-#Project, and compute heat index out of 100
-arcpy.ProjectRaster_management(path.join(gdb, 'bingeuc2'), 'bingeuc2_proj', UTM10, resampling_type='BILINEAR') #Project
 #Compute a heat index out of 100 (standardized, but non-transformed -- for communication)
 bingmax = arcpy.GetRasterProperties_management('heat_bing_int', 'MAXIMUM')
 bingheatindex = 100*Float(Raster('heat_bing_int'))/float(bingmax.getOutput(0))
