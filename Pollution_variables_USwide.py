@@ -44,6 +44,7 @@ NED19proj = os.path.join(rootdir, 'results/ned19_psproj')
 NED13proj = os.path.join(rootdir, 'results/ned13_psproj')
 
 XRFsites = os.path.join(rootdir, 'data/field_data/sampling_sites_edit.shp')
+siteshull = os.path.join(rootdir, 'results/XRFsites_convexhull.shp')
 Binggdb = os.path.join(rootdir, 'results/bing/postprocess.gdb')
 
 NLCD_reclass = os.path.join(rootdir, 'results/LU.gdb/NLCD_reclass_final')
@@ -112,7 +113,6 @@ hpms_sub = os.path.join(usdotgdb, 'hpmstiger_subset')
 hpms_PS = os.path.join(usdotgdb, 'hpmstiger_PS')
 hpms_ras19 = os.path.join(usdotgdb, 'hpmstiger_subsetras19')
 hpms_ras13 = os.path.join(usdotgdb, 'hpmstiger_subsetras13')
-siteshull = os.path.join(rootdir, 'results/XRFsites_convexhull.shp')
 
 NLCD_reclass_PS = os.path.join(rootdir, 'results/NLCD_reclass_final_PS.tif')
 NLCD_imp_PS = os.path.join(rootdir, 'results/nlcd_imp_ps')
@@ -689,10 +689,6 @@ arcpy.ClearEnvironment('Workspace')
 # PREPARE DATA ON ROAD GRADIENTS
 ########################################################################################################################
 #Subset road dataset based on convex hull around sites
-arcpy.Buffer_analysis(XRFsites, os.path.join(rootdir, 'results/XRFsites_3kmbuf.shp'),
-                      buffer_distance_or_field='3000 meters', method='GEODESIC')
-arcpy.MinimumBoundingGeometry_management(os.path.join(rootdir, 'results/XRFsites_3kmbuf.shp'),
-                                         siteshull, geometry_type='CONVEX_HULL', group_option='ALL')
 arcpy.Clip_analysis(hpmstiger, siteshull, hpms_sub)
 
 #Compute statistics

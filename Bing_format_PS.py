@@ -21,15 +21,12 @@ rootdir = 'D:/Mathis/ICSL/stormwater/'
 res= path.join(rootdir, 'results/bing/')
 NLCD_imp = os.path.join(rootdir, 'data/NLCD_2016_Impervious_L48_20190405.img') #Based on 2016 dara
 ref_cs = arcpy.Describe(NLCD_imp).SpatialReference
-sites_bufunion = os.path.join(rootdir, 'results/airdata/airsites_550bufunion.shp')
+XRFsites = os.path.join(rootdir, 'data/field_data/sampling_sites_edit.shp')
 
 arcpy.env.workspace=res
 mlclist = [filenames for (dirpath, dirnames, filenames) in walk(res)][0]
 regex=re.compile(".+mlc\.tif$")
 clasfiles = [m.group(0) for l in mlclist for m in [regex.search(l)] if m] #Look into this
-
-
-#sites = path.join(rootdir, "data\\field_data\sampling_sites_edit.shp")
 
 #Bing logo masks
 logomask_odd = path.join(rootdir, 'results/boolean_logo.tif')
@@ -42,6 +39,10 @@ else:
     arcpy.CreateFileGDB_management(path.join(rootdir,'results/bing'), 'postprocess.gdb')
 
 #Output variables (2 because changing from G0Y1O2R3 to G1Y2O3R4)
+XRFsitesbuf = os.path.join(rootdir, 'results/XRFsites_1kmbuf.shp')
+XRFsiteshull = os.path.join(rootdir, 'results/XRFsites_convexhull.shp')
+XRFsiteshull_webmercator = os.path.join(rootdir, 'results/XRFsites_convexhull_webmercator.shp')
+
 bingmean_odd = path.join(res,'bingmeanod2')
 bingmean_even = path.join(res,'bingmeanev2')
 traffic3am_ras = path.join(res, 'traffic3am2')
@@ -51,11 +52,6 @@ bingclean_odd = path.join(res, 'bingcleanod2')
 bingclean_even = path.join(res, 'bingcleanev2')
 bingclean_mean = path.join(gdb, 'bingcleanmea2')
 bingeuc = path.join(res, 'bingeuc1902')
-
-# arcpy.Project_management(sites, path.join(rootdir, "data\\field_data\sampling_sites_edit_proj.shp"), out_coor_system=path.join(res, clasfiles[0]))
-# sitesbuf =  path.join(rootdir, "data\\field_data\sampling_sites_edit1000mbuffer.shp")
-# arcpy.Buffer_analysis(path.join(rootdir, "data\\field_data\sampling_sites_edit_proj.shp"), sitesbuf
-#                      , '1000 meters', method='GEODESIC')
 
 #Reclassify (2 min/hourly image when out of a gdb, then 8 minutes when using gdb?)
 arcpy.env.workspace= gdb
@@ -160,8 +156,13 @@ if not arcpy.Exists(path.join(gdb, 'bingeuc1902')):
                                        #coordinate_system_for_the_raster= arcpy.Describe(arcpy.ListRasters('bingeuc2*')[0]).SpatialReference,
                                        pixel_type = '16_BIT_UNSIGNED', number_of_bands=1, mosaic_method='LAST')
 
+#Create buffer around sites to generate heatmaps for sampling area (projected to same as Bing data)
+arcpy.Buffer_analysis(XRFsites, XRFsitesbuf, buffer_distance_or_field='1000 meters', method='GEODESIC')
+arcpy.MinimumBoundingGeometry_management(XRFsitesbuf, XRFsiteshull, geometry_type='CONVEX_HULL', group_option='ALL')
+arcpy.Project_management(XRFsiteshull, XRFsiteshull_webmercator, out_coor_system=arcpy.Describe(bingeuc).SpatialReference)
+
 #Create heatmap - focal statistics
-arcpy.env.extent = sites_bufunion
+arcpy.env.extent = XRFsiteshull
 arcpy.env.snapRaster = bingeuc
 customheatmap(kernel_dir=path.join(rootdir, 'results/bing'), in_raster=path.join(gdb, 'bingeuc1902'),
               out_gdb = gdb, out_var='bing1902', divnum=100, keyw='(pow|log)(([1235]00)|50)(_[123])*', verbose=True)
