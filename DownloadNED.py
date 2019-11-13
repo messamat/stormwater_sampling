@@ -7,10 +7,11 @@ import zipfile
 import arcpy
 import re
 
-UTM10 = arcpy.SpatialReference(26910)
 arcpy.CheckOutExtension('Spatial')
 
 rootdir = 'D:/Mathis/ICSL/stormwater'
+NLCD_imp = os.path.join(rootdir, 'data/NLCD_2016_Impervious_L48_20190405.img') #Based on 2016 dara
+ref_cs = arcpy.Describe(NLCD_imp).SpatialReference
 def download_unzip_ned(tempdir, URLlist, outdir, outras, download=None, extract=None):
     os.chdir(tempdir)
 
@@ -57,7 +58,7 @@ if not arcpy.Exists('ned19_ps'):
     download_unzip_ned(tempdir = os.path.join(rootdir, 'data/NED19'), URLlist = 'cartExport_20181221_075329.txt',
                        outdir = os.path.join(rootdir, 'results'), outras = 'ned19_ps', download = True, extract = True)
 if not arcpy.Exists('ned19_psproj'):
-    arcpy.ProjectRaster_management('ned19_ps', 'ned19_psproj', UTM10, resampling_type ='BILINEAR')
+    arcpy.ProjectRaster_management('ned19_ps', 'ned19_psproj', ref_cs, resampling_type ='BILINEAR')
 # if not arcpy.Exists('slope19_ps'):
 #     slope = arcpy.sa.Slope('ned19_psproj', 'DEGREE')
 #     slope.save('slope19_ps')
@@ -66,9 +67,9 @@ if not arcpy.Exists('ned19_psproj'):
 #Download and mosaic NED 1/3 arc-second
 if not arcpy.Exists('ned13_ps'):
     download_unzip_ned(tempdir = os.path.join(rootdir, 'data/NED13'), URLlist = 'cartExport_20181220_114439.txt',
-                       outdir = os.path.join(rootdir, 'results'), outras = 'ned13_ps', download=None, extract=None)
+                       outdir = os.path.join(rootdir, 'results'), outras = 'ned13_ps', download=True, extract=True)
 if not arcpy.Exists('ned13_psproj'):
-    arcpy.ProjectRaster_management('ned13_ps', 'ned13_psproj', UTM10, resampling_type ='BILINEAR')
+    arcpy.ProjectRaster_management('ned13_ps', 'ned13_psproj', ref_cs, resampling_type ='BILINEAR')
 # if not arcpy.Exists('slope13_ps'):
 #     slope = arcpy.sa.Slope('ned13_psproj', 'DEGREE')
 #     slope.save('slove13_ps')

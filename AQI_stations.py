@@ -326,16 +326,16 @@ for var in covar_sub:
         varfolder_dic[var] = 'monolevel'
 
 #Download all NARR data from 2010 to 2018 for each variable
-yearlist = range(2014, 2020)
-for var in varfolder_dic:
-    if varfolder_dic[var] == 'pressure':
-        varbase = var.split('.')[0]
-        downloadNARR(folder=varfolder_dic[var], variable=varbase,
-                     years=['{0}{1}'.format(year,month) for year in yearlist
-                            for month in [str(i).zfill(2) for i in range(1,13)]],
-                     outdir=NARRdir)
-    else:
-        downloadNARR(folder=varfolder_dic[var], variable=var, years=yearlist, outdir=NARRdir)
+# yearlist = range(2014, 2020)
+# for var in varfolder_dic:
+#     if varfolder_dic[var] == 'pressure':
+#         varbase = var.split('.')[0]
+#         downloadNARR(folder=varfolder_dic[var], variable=varbase,
+#                      years=['{0}{1}'.format(year,month) for year in yearlist
+#                             for month in [str(i).zfill(2) for i in range(1,13)]],
+#                      outdir=NARRdir)
+#     else:
+#         downloadNARR(folder=varfolder_dic[var], variable=var, years=yearlist, outdir=NARRdir)
 
 #Get proj4 from netcdf
 templatef = xr.open_mfdataset(glob.glob(os.path.join(NARRdir, varfolder_dic.keys()[0]+'*')))
@@ -374,11 +374,11 @@ aea_proj4 = ("+proj=aea +lat_1={0} +lat_2={1} +lat_0={2} +lon_0={3} +x_0={4} +y_
                     ref_cs.centralMeridian,
                     ref_cs.falseEasting,
                     ref_cs.falseNorthing))
-sites_gpd = pd.concat([sites_wgs84.to_crs(crs=lcc_proj4), sites_nad27.to_crs(crs=lcc_proj4), sites_nad83.to_crs(crs=lcc_proj4)])
+sites_gpd = pd.concat([sites_wgs84.to_crs(crs=aea_proj4), sites_nad27.to_crs(crs=aea_proj4), sites_nad83.to_crs(crs=aea_proj4)])
 sites_gpd['x'], sites_gpd['y'] = sites_gpd.geometry.x, sites_gpd.geometry.y
 #Remove outliers with lon=0
 sites_gpd['Longitude'].describe()
-sites_gpd = sites_gpd_lambers[sites_gpd_lambers['Longitude'] != 0]
+sites_gpd = sites_gpd[sites_gpd['Longitude'] != 0]
 
 #Create 550 m radius buffers and dissolve them
 sites_buf = sites_gpd['geometry'].buffer(distance=550)
@@ -389,7 +389,7 @@ sites_bufgpd['diss'] = 1
 sites_bufdis = sites_bufgpd.dissolve(by='diss')
 
 #Dissolve only overlapping buffers
-sites_bufunion = gpd.GeoDataFrame([polygon for polygon in sites_bufgpd.unary_union], crs=lcc_proj4). \
+sites_bufunion = gpd.GeoDataFrame([polygon for polygon in sites_bufgpd.unary_union], crs=aea_proj4). \
     rename(columns={0:'geometry'}).set_geometry('geometry')
 
 #Output to shapefile
