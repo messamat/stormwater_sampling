@@ -32,23 +32,36 @@ import cPickle as pickle
 # pickle.dump(segIDs2,f)
 # f.close()
 
-def ExplodeOverlappingLines(fc, tolerance, keep=True):
-    print('Buffering lines...')
+def ExplodeOverlappingLines(fc, tolerance, keep=True, overwrite = False):
     idName = "ORIG_FID"
-    fcbuf = arcpy.Buffer_analysis(fc, fc+'buf', tolerance, line_side='FULL', line_end_type='FLAT')
 
-    print('Intersecting buffers...')
-    intersect = arcpy.Intersect_analysis(fcbuf,'intersect')
+    if arcpy.Exists(fc+'buf') and overwrite==False:
+        print('Line buffers already exist... skipping')
+    else:
+        print('Buffering lines...')
+        arcpy.Buffer_analysis(fc, fc+'buf', tolerance, line_side='FULL', line_end_type='FLAT')
+
+    if arcpy.Exists(fc+'intersect') and overwrite==False:
+        print('Line buffer intersections already exist... skipping')
+    else:
+        print('Intersecting buffers...')
+        arcpy.Intersect_analysis(fc+'buf', fc+'intersect')
 
     print('Creating dictionary of overlaps...')
     #Find identical shapes and put them together in a dictionary, unique shapes will only have one value
     segIDs = defaultdict(list)
-    with arcpy.da.SearchCursor(intersect, ['Shape@WKT', idName]) as cursor:
+    with arcpy.da.UpdateCursor(fc+'intersect', [idName]) as cursor:
         x=0
         for row in cursor:
+            # if x == 6424:
+            #     print('Delete a corrupted geometry')
+            #     cursor.deleteRow()
             if x%100000 == 0:
                 print('Processed {} records for duplicate shapes...'.format(x))
-            segIDs[row[0]].append(row[1])
+            try:
+                segIDs[row[0]].append(row[1])
+            except:
+                cursor.deleteRow()
             x+=1
 
     #Build dictionary of all buffers overlapping each buffer
@@ -60,7 +73,7 @@ def ExplodeOverlappingLines(fc, tolerance, keep=True):
     print('Assigning lines to non-overlapping sets...')
     grpdict = {}
     # Mark all non-overlapping one to group 1
-    for row in arcpy.da.SearchCursor(fcbuf, [idName]):
+    for row in arcpy.da.SearchCursor(fc+'buf', [idName]):
         if row[0] in segIDs2:
             grpdict[row[0]] = None
         else:
@@ -81,7 +94,7 @@ def ExplodeOverlappingLines(fc, tolerance, keep=True):
                     s_update(rec[1])  # Add all overlapping feature to ovList
         i += 1 #Iterate to the next group
 
-    print('Writing out results to "expl" field in...'.format(fc))
+    print('Writing out results to "expl" field in...{}'.format(fc))
     arcpy.AddField_management(fc, 'expl', "SHORT")
     with arcpy.da.UpdateCursor(fc,
                                [arcpy.Describe(fc).OIDfieldName, 'expl']) as cursor:
@@ -92,5 +105,5 @@ def ExplodeOverlappingLines(fc, tolerance, keep=True):
 
     if keep == False:
         print('Deleting intermediate outputs...')
-        for fc in ['intersect', "explFindID"]:
+        for fc in [fc+'intersect', "explFindID"]:
             arcpy.Delete_management(fc)
