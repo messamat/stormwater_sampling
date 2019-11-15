@@ -46,22 +46,30 @@ def ExplodeOverlappingLines(fc, tolerance, keep=True, overwrite = False):
     else:
         print('Intersecting buffers...')
         arcpy.Intersect_analysis(fc+'buf', fc+'intersect')
+        arcpy.RepairGeometry_management(fc+'intersect', delete_null='DELETE_NULL')
 
     print('Creating dictionary of overlaps...')
     #Find identical shapes and put them together in a dictionary, unique shapes will only have one value
     segIDs = defaultdict(list)
-    with arcpy.da.UpdateCursor(fc+'intersect', [idName]) as cursor:
+    #First delete corrupted shape
+    keeplooping = True
+    with arcpy.da.UpdateCursor(fc + 'intersect', ['SHAPE@WKT', 'OID@']) as cursor:
+        while keeplooping == True:
+            try:
+                for row in cursor:
+                    pass
+                keeplooping = False
+            except:
+                print('Delete feature with OBJECTID {}'.format(row[1]))
+                cursor.deleteRow()
+
+    #Actually run through dataset
+    with arcpy.da.UpdateCursor(fc+'intersect', ['SHAPE@WKT', idName]) as cursor:
         x=0
         for row in cursor:
-            # if x == 6424:
-            #     print('Delete a corrupted geometry')
-            #     cursor.deleteRow()
             if x%100000 == 0:
                 print('Processed {} records for duplicate shapes...'.format(x))
-            try:
-                segIDs[row[0]].append(row[1])
-            except:
-                cursor.deleteRow()
+            segIDs[row[0]].append(row[1])
             x+=1
 
     #Build dictionary of all buffers overlapping each buffer

@@ -9,7 +9,7 @@ from heatmap_custom import *
 arcpy.CheckOutExtension("Spatial")
 arcpy.env.overwriteOutput=True
 
-def roadtoheat(site, inshp, res, kernel_dir, keyw, inFID, heatfield, sitedic, outdir):
+def roadtoheat(site, inshp, res, kernel_dir, keyw, inFID, heatfield, sitedic, snapras, outdir):
     expr =  """{0} = {1}""".format(arcpy.AddFieldDelimiters(inshp, inFID), str(site))
     print(expr)
     arcpy.MakeFeatureLayer_management(in_features=inshp, out_layer='lyr')
@@ -21,6 +21,7 @@ def roadtoheat(site, inshp, res, kernel_dir, keyw, inFID, heatfield, sitedic, ou
         #print('{} features'.format(nshp))
         arcpy.ResetEnvironments()
         arcpy.env.extent = sitedic[site]
+        arcpy.env.snapRaster = snapras
         outras =  os.path.join(outdir, 'hpmstiger_{0}{1}.tif'.format(heatfield, site))
         if not arcpy.Exists(outras):
             print('{} does not exist, generate heatmap'.format(outras))
@@ -38,7 +39,7 @@ def roadtoheat(site, inshp, res, kernel_dir, keyw, inFID, heatfield, sitedic, ou
 
 if __name__ == '__main__':
     rootdir = 'D:/Mathis/ICSL//stormwater'
-    template_ras = os.path.join(rootdir,'results/bing/181204_02_00_class_mlc.tif')
+    template_ras = os.path.join(rootdir,'results/bing/heatbing1902log300proj.tif')
     res = arcpy.GetRasterProperties_management(template_ras, 'CELLSIZEX').getOutput(0)
 
     AQIgdb = os.path.join(rootdir, 'results/airdata/AQI.gdb')
@@ -69,18 +70,18 @@ if __name__ == '__main__':
     # for key in keylist[1:20]:
     #     OSMtoheat_partial(key)
 
-
     tic = time.time()
     p = multiprocessing.Pool(int(multiprocessing.cpu_count()/2))
     roadtoheat_partial = partial(roadtoheat,
-                                inshp = roadAQI,
-                                res=res,
-                                kernel_dir = os.path.join(rootdir, 'results/bing'),
-                                keyw = 'log100',
-                                inFID = 'FID_airsites_550bufunion',
-                                heatfield = 'aadt_filled',
-                                sitedic = AQIbuflist,
-                                outdir = AQIdir)
+                                 inshp = roadAQI,
+                                 res=res,
+                                 kernel_dir = os.path.join(rootdir, 'results/bing'),
+                                 keyw = 'log100',
+                                 inFID = 'FID_airsites_550bufunion',
+                                 heatfield = 'aadt_filled',
+                                 sitedic = AQIbuflist,
+                                 outdir = AQIdir,
+                                 snapras = template_ras)
     print('Launch parallel processing')
     p.map(roadtoheat_partial, keylist)
     p.close()

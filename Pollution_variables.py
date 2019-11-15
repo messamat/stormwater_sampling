@@ -48,7 +48,7 @@ PSwatershed = os.path.join(rootdir, 'results/PSwtshd_dissolve.shp')
 pscities = os.path.join(rootdir, 'results/PScitylimits.shp')
 pscounties = os.path.join(rootdir, 'results/PScounties.shp')
 
-template_ras = os.path.join(rootdir,'results/bing/bingeuc1902.tif')
+template_ras = os.path.join(rootdir,'results/bing/bingeuc1902')
 restemplate = arcpy.GetRasterProperties_management(template_ras, 'CELLSIZEX')
 cs_ref = arcpy.Describe(NLCD_imp).SpatialReference
 
@@ -68,6 +68,8 @@ XRFsites = os.path.join(rootdir, 'data/field_data/sampling_sites_edit.shp')
 #NED data paths to be updated when transfer to laptop
 NED19proj = os.path.join(rootdir, 'results/ned19_psproj')
 NED13proj = os.path.join(rootdir, 'results/ned13_psproj')
+NED19int = os.path.join(rootdir, 'results/ned19_psint')
+NED13int = os.path.join(rootdir, 'results/ned13_psint')
 NED19smooth = os.path.join(rootdir, 'results/ned19_smooth')
 NED13smooth = os.path.join(rootdir, 'results/ned13_smooth')
 rangetab19 = os.path.join(PSgdb, 'OSM_elv19range')
@@ -115,7 +117,7 @@ PStransitbus_splitdiss = PStransitbus_proj + '_splitv_diss'
 PStransitduplitab = os.path.join(rootdir, 'results/transit.gdb/explFindID')
 PStransitras = os.path.join(rootdir, 'results/transit.gdb/PStransit_ras')
 
-XRFsites_aea = os.path.join(PSgdb, 'XRFsites_aea')
+trees_aea = os.path.join(gdb, 'trees_aea')
 
 ########################################################################################################################
 # PREPARE LAND USE DATA FOR PUGET SOUND
@@ -316,13 +318,13 @@ arcpy.AddJoin_management("intlyr", arcpy.Describe("intlyr").OIDfieldName, PStran
 arcpy.Dissolve_management("intlyr", PStransitbus_splitdiss, dissolve_field='explFindID.FEAT_SEQ',
                           statistics_fields=[[os.path.split(PStransitbus_proj)[1] + '_split.adjustnum_int', 'SUM']]) #Dissolve overlapping segments
 arcpy.RepairGeometry_management(PStransitbus_splitdiss, delete_null = 'DELETE_NULL') #sometimes creates empty geom
+
 #Get the length of a half pixel diagonal to create buffers for
 #guaranteeing that segments potentially falling within the same pixel are rasterized separately
 tolerance = (2.0**0.5)*float(restemplate.getOutput(0))/2
 arcpy.env.workspace = os.path.dirname(soundtransit)
 ExplodeOverlappingLines(PStransitbus_splitdiss, tolerance)
 
-############################################################# WAIT TILL GET BINGEUC TO SNAP RASTER - DOWN #####################
 #For each set of non-overlapping lines, create its own raster
 tilef = 'expl'
 tilelist = list(set([row[0] for row in arcpy.da.SearchCursor(PStransitbus_splitdiss, [tilef])]))
@@ -334,7 +336,8 @@ for tile in tilelist:
         selexpr = '{0} = {1}'.format(tilef, tile)
         print(selexpr)
         arcpy.MakeFeatureLayer_management(PStransitbus_splitdiss, 'bus_lyr', where_clause= selexpr)
-        arcpy.PolylineToRaster_conversion('bus_lyr', value_field='adjustnum_int', out_rasterdataset=outras, cellsize=restemplate)
+        arcpy.PolylineToRaster_conversion('bus_lyr', value_field='SUM_PStransit_busroutes_proj_split_adjustnum_int',
+                                          out_rasterdataset=outras, cellsize=restemplate)
 
 #Mosaic to new raster
 arcpy.env.workspace = os.path.split(outras_base)[0]
@@ -345,9 +348,8 @@ for tile in transitras_tiles:
     print('Deleting {}...'.format(tile))
     arcpy.Delete_management(tile)
 arcpy.ClearEnvironment('Workspace')
-############################################################# WAIT TILL GET BINGEUC TO SNAP RASTER - UP #####################
 
-#-----------------------------------------------------------------------------------------------------------------------
+#----------------------------------------------------------------------------------------------------------------------
 # PREPARE DATA ON ROAD GRADIENTS (layers generated for initial sampling)
 #-----------------------------------------------------------------------------------------------------------------------
 #Run on NED19 max-min for line itself
@@ -361,12 +363,16 @@ arcpy.PolylineToRaster_conversion(PSOSM_all, 'osm_id', PSOSMras + '13', cell_ass
 ZonalStatisticsAsTable(PSOSMras + '13', 'osm_id', NED13proj, out_table = rangetab13, statistics_type= 'RANGE', ignore_nodata='NODATA')
 
 #Run on smoothed NED 19 max-min for line itself
-ned19_smooth = FocalStatistics(NED19proj, NbrRectangle(3, 3, 'cells'), statistics_type='MEDIAN', ignore_nodata='DATA')
+int19 = Int(Raster(NED19proj) + 0.5)
+int19.save(NED19int)
+ned19_smooth = FocalStatistics(NED19int, NbrRectangle(3, 3, 'cells'), statistics_type='MEDIAN', ignore_nodata='DATA')
 ned19_smooth.save(NED19smooth)
 ZonalStatisticsAsTable(PSOSMras + '19', 'osm_id', NED19smooth, out_table = rangetab19_smooth, statistics_type= 'RANGE', ignore_nodata='NODATA')
 
 #Run on smoothed NED 13 max-min for line itself
-ned13_smooth = FocalStatistics(NED13proj, NbrRectangle(3, 3, 'cells'), statistics_type='MEDIAN', ignore_nodata='DATA')
+int13 = Int(Raster(NED13proj) + 0.5)
+int13.save(NED13int)
+ned13_smooth = FocalStatistics(NED13int, NbrRectangle(3, 3, 'cells'), statistics_type='MEDIAN', ignore_nodata='DATA')
 ned13_smooth.save(NED13smooth)
 ZonalStatisticsAsTable(PSOSMras + '13', 'osm_id', NED13smooth, out_table = rangetab13_smooth, statistics_type= 'RANGE', ignore_nodata='NODATA')
 
@@ -409,7 +415,7 @@ ZonalStatisticsAsTable(sroadsras, 'Value', NED13proj, out_table = srangetab13,
                        statistics_type= 'RANGE', ignore_nodata='NODATA')
 ZonalStatisticsAsTable(sroadsras, 'Value', NED13smooth, out_table = srangetab13 + '_smooth',
                        statistics_type= 'RANGE', ignore_nodata='NODATA')
-arcpy.ResetEnvironments('snapRaster')
+arcpy.ClearEnvironment('snapRaster')
 
 # Fill in and adjust values for those roads outside of NED 1/9 extent
 arcpy.AddField_management(PSOSM_elv, 'gradient_composite', 'FLOAT')
@@ -472,7 +478,7 @@ customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=OSM_gr
 # GET TREES HEATMAP VALUES
 ########################################################################################################################
 #Project
-arcpy.Project_management(XRFsites, XRFsites_aea, cs_ref)
+arcpy.Project_management(trees, trees_aea, cs_ref)
 
 #Get heat values for all trees
 def Iter_ListRaster(workspaces, wildcard):
@@ -488,12 +494,12 @@ def Iter_ListRaster(workspaces, wildcard):
 heatlist = Iter_ListRaster([PSgdb, gdb, os.path.join(rootdir, 'results/transit.gdb'), Binggdb], 'heat*') + \
            [NLCD_imp_PS, NLCD_imp_PS + '_mean.tif', NLCD_reclass_PS]
 
-ExtractMultiValuesToPoints(XRFsites_aea, heatlist, bilinear_interpolate_values='NONE')
-arcpy.AddGeometryAttributes_management(XRFsites_aea, 'POINT_X_Y_Z_M', Coordinate_System= arcpy.SpatialReference(4326))
+ExtractMultiValuesToPoints(trees_aea, heatlist, bilinear_interpolate_values='NONE')
+arcpy.AddGeometryAttributes_management(trees_aea, 'POINT_X_Y_Z_M', Coordinate_System= arcpy.SpatialReference(4326))
 
 #Get zoning
 arcpy.Project_management(zoning, 'zoning_proj', cs_ref)
-arcpy.SpatialJoin_analysis('trees_proj', 'zoning_proj', 'trees_zoning', join_operation='JOIN_ONE_TO_ONE', match_option='WITHIN')
+arcpy.SpatialJoin_analysis('trees_aea', 'zoning_proj', 'trees_zoning', join_operation='JOIN_ONE_TO_ONE', match_option='WITHIN')
 #Get census data
 arcpy.Project_management(censustract, 'Tract_2010Census_proj', cs_ref)
 arcpy.SpatialJoin_analysis('trees_zoning', 'Tract_2010Census_proj', 'trees_zoning_census', join_operation='JOIN_ONE_TO_ONE', match_option='WITHIN')

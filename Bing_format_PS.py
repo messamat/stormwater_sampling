@@ -51,7 +51,7 @@ traffic2am_ras = path.join(res, 'traffic2am2')
 bingclean_odd = path.join(res, 'bingcleanod2')
 bingclean_even = path.join(res, 'bingcleanev2')
 bingclean_mean = path.join(gdb, 'bingcleanmea2')
-bingeuc = path.join(res, 'bingeuc1902')
+bingeuc = path.join(gdb, 'bingeuc1902')
 
 #Reclassify (2 min/hourly image when out of a gdb, then 8 minutes when using gdb?)
 arcpy.env.workspace= gdb

@@ -59,7 +59,7 @@ transitwiki_dir = os.path.join(rootdir, 'data/TransitWiki201812')
 
 PSdissolve = os.path.join(rootdir, 'results/PSwtshd_dissolve.shp')
 
-template_ras = os.path.join(rootdir, 'results/bing/181128_08_00_class_mlc.tif') #bingeuc
+template_ras = os.path.join(rootdir, 'results/bing/heatbing1902log300proj.tif')
 restemplate = arcpy.GetRasterProperties_management(template_ras, 'CELLSIZEX')
 pollutgdb = os.path.join(rootdir,'results/pollution_variables.gdb')
 if arcpy.Exists(pollutgdb):
@@ -95,10 +95,10 @@ hmps_spdl = os.path.join(usdotgdb, 'hpms_spdl')
 
 NED19smooth = os.path.join(rootdir, 'results/ned19_smooth')
 NED13smooth = os.path.join(rootdir, 'results/ned13_smooth')
-rangetab19 = os.path.join(PSgdb, 'hpms_elv19range')
-rangetab13 = os.path.join(PSgdb, 'hpms_elv13range')
-rangetab19_smooth = os.path.join(PSgdb, 'hpms_elv19range_smooth')
-rangetab13_smooth = os.path.join(PSgdb, 'hpms_elv13range_smooth')
+rangetab19 = os.path.join(pollutgdb, 'hpms_elv19range')
+rangetab13 = os.path.join(pollutgdb, 'hpms_elv13range')
+rangetab19_smooth = os.path.join(pollutgdb, 'hpms_elv19range_smooth')
+rangetab13_smooth = os.path.join(pollutgdb, 'hpms_elv13range_smooth')
 
 tiger16dir = os.path.join(rootdir, 'data/TIGER2016')
 tigerroads = os.path.join(usdotgdb, 'tigerroads_merge')
@@ -617,15 +617,23 @@ arcpy.Project_management(XRFsiteshull, XRFsiteshull_aea, out_coor_system=cs_ref)
 arcpy.Clip_analysis(hpmstigerproj, XRFsiteshull_aea, hpms_sub)
 
 #Compute statistics
+arcpy.env.snapRaster = NED19proj
 arcpy.PolylineToRaster_conversion(hpms_sub, 'OBJECTID', hpms_ras19, cell_assignment='MAXIMUM_COMBINED_LENGTH',
                                   priority_field= 'aadt_filled', cellsize = NED19proj)
-ZonalStatisticsAsTable(hpms_ras19, 'Value', NED19smooth, out_table = rangetab19 + '_smooth',
+ZonalStatisticsAsTable(hpms_ras19, 'Value', NED19proj, out_table = rangetab19,
+                       statistics_type= 'RANGE', ignore_nodata='NODATA')
+ZonalStatisticsAsTable(hpms_ras19, 'Value', NED19smooth, out_table = rangetab19_smooth,
                        statistics_type= 'RANGE', ignore_nodata='NODATA')
 
+arcpy.env.snapRaster = NED13proj
 arcpy.PolylineToRaster_conversion(hpms_sub, 'OBJECTID', hpms_ras13, cell_assignment='MAXIMUM_COMBINED_LENGTH',
                                   priority_field= 'aadt_filled', cellsize = NED13proj)
-ZonalStatisticsAsTable(hpms_ras13, 'Value', NED13smooth, out_table = rangetab13 + '_smooth',
+ZonalStatisticsAsTable(hpms_ras13, 'Value', NED13proj, out_table = rangetab13,
                        statistics_type= 'RANGE', ignore_nodata='NODATA')
+ZonalStatisticsAsTable(hpms_ras13, 'Value', NED13smooth, out_table = rangetab13_smooth,
+                       statistics_type= 'RANGE', ignore_nodata='NODATA')
+
+arcpy.ClearEnvironment('snapRaster')
 
 #Get all range values for zonal statistics tables
 tablist =  [rangetab19 + '_smooth', rangetab13 + '_smooth']
@@ -661,6 +669,7 @@ if len(missinglist)>0:
 ########################################################################################################################
 #Get heatmaps
 arcpy.env.workspace = pollutgdb
+arcpy.env.snapRaster = template_ras
 #AADT
 arcpy.PolylineToRaster_conversion(hpms_sub, value_field='aadt_filled', out_rasterdataset='hpmssubAADT',
                                   priority_field='aadt_filled', cellsize=restemplate)
@@ -668,7 +677,6 @@ customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=os.pat
               out_gdb=pollutgdb, out_var='subAADT', divnum=100, keyw='(pow|log)[1235]00(_[123])*', verbose=True)
 
 #Speed limit
-[f.name for f in arcpy.ListFields(hpms_sub)]
 arcpy.PolylineToRaster_conversion(hpms_sub, value_field='spdl_filled', out_rasterdataset='hpmssubspdl',
                                   priority_field='spdl_filled', cellsize=restemplate)
 customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=os.path.join(pollutgdb, 'hpmssubspdl'),
@@ -677,7 +685,7 @@ customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=os.pat
 #Public transit
 arcpy.env.extent = hpms_sub
 customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=PStransitras,
-              out_gdb=transitgdb, out_var='bustransit', divnum=100,
+              out_gdb=pollutgdb, out_var='bustransit', divnum=100,
               keyw='(pow|log)[1235]00(_[123])*', verbose=True)
 
 #Road gradient
@@ -710,6 +718,9 @@ def Iter_ListRaster(workspaces, wildcard):
 heatlist = Iter_ListRaster([pollutgdb, Binggdb, transitgdb], 'heat*') +\
                        [NLCD_reclass_PS + NLCD_imp_PS, NLCD_imp_PS + '_mean.tif']
 
+#Project
+arcpy.Project_management(XRFsites, XRFsites_aea, cs_ref)
+
 #Extract values
 arcpy.env.qualifiedFieldNames = False
 ExtractMultiValuesToPoints(XRFsites_aea, heatlist, bilinear_interpolate_values='NONE')
@@ -725,13 +736,14 @@ arcpy.CalculateField_management(XRFsites_aea, 'SiteIDPair', expression='!F_!+!Pa
 arcpy.Clip_analysis(hpmstigerproj, PSdissolve, hpms_PS)
 
 arcpy.env.workspace = pollutgdbPS
+
 #AADT
-arcpy.env.snapRaster = bingeuc
+arcpy.env.snapRaster = template_ras
 arcpy.PolylineToRaster_conversion(hpms_PS, value_field='aadt_filled', out_rasterdataset='hpmsPSAADT',
                                   priority_field='aadt_filled', cellsize=restemplate)
 customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=os.path.join(pollutgdbPS, 'hpmsPSAADT'),
               out_gdb=pollutgdbPS, out_var='PSAADT', divnum=100, keyw='log100*', verbose=True)
-arcpy.ResetEnvironments("snapRaster")
+arcpy.ClearEnvironment("snapRaster")
 
 ########################################################################################################################
 # SUBSET HPMS TIGER AND GET AADT HEATMAP VALUES AROUND AQI STATIONS
