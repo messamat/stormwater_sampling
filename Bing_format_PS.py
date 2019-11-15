@@ -17,7 +17,7 @@ arcpy.CheckOutExtension("Spatial")
 arcpy.env.overwriteOutput=True
 
 #Set up paths
-rootdir = 'D:/Mathis/ICSL/stormwater/'
+rootdir = 'F:/Mathis/Levin_Lab/stormwater/'
 res= path.join(rootdir, 'results/bing/')
 NLCD_imp = os.path.join(rootdir, 'data/NLCD_2016_Impervious_L48_20190405.img') #Based on 2016 dara
 ref_cs = arcpy.Describe(NLCD_imp).SpatialReference
@@ -52,6 +52,7 @@ bingclean_odd = path.join(res, 'bingcleanod2')
 bingclean_even = path.join(res, 'bingcleanev2')
 bingclean_mean = path.join(gdb, 'bingcleanmea2')
 bingeuc = path.join(gdb, 'bingeuc1902')
+heatbingps = path.join(gdb, 'heatbingPS1902_log300')
 
 #Reclassify (2 min/hourly image when out of a gdb, then 8 minutes when using gdb?)
 arcpy.env.workspace= gdb
@@ -156,13 +157,16 @@ if not arcpy.Exists(path.join(gdb, 'bingeuc1902')):
                                        #coordinate_system_for_the_raster= arcpy.Describe(arcpy.ListRasters('bingeuc2*')[0]).SpatialReference,
                                        pixel_type = '16_BIT_UNSIGNED', number_of_bands=1, mosaic_method='LAST')
 
+########################################################################################################################
+# GENERATE HEATMAPS FOR SAMPLING AREA
+########################################################################################################################
 #Create buffer around sites to generate heatmaps for sampling area (projected to same as Bing data)
 arcpy.Buffer_analysis(XRFsites, XRFsitesbuf, buffer_distance_or_field='1000 meters', method='GEODESIC')
 arcpy.MinimumBoundingGeometry_management(XRFsitesbuf, XRFsiteshull, geometry_type='CONVEX_HULL', group_option='ALL')
 arcpy.Project_management(XRFsiteshull, XRFsiteshull_webmercator, out_coor_system=arcpy.Describe(bingeuc).SpatialReference)
 
 #Create heatmap - focal statistics
-arcpy.env.extent = XRFsiteshull
+arcpy.env.extent = XRFsiteshull_webmercator
 arcpy.env.snapRaster = bingeuc
 customheatmap(kernel_dir=path.join(rootdir, 'results/bing'), in_raster=path.join(gdb, 'bingeuc1902'),
               out_gdb = gdb, out_var='bing1902', divnum=100, keyw='(pow|log)(([1235]00)|50)(_[123])*', verbose=True)
@@ -171,9 +175,19 @@ customheatmap(kernel_dir=path.join(rootdir, 'results/bing'), in_raster=path.join
 arcpy.env.workspace = gdb
 heatbing_list = arcpy.ListRasters('heatbing1902*')
 for ras in heatbing_list:
+    print('Projecting {}...'.format(path.join(gdb, ras + 'proj')))
     arcpy.ProjectRaster_management(path.join(gdb, ras), path.join(gdb, ras + 'proj'), ref_cs, resampling_type='NEAREST') #Project
 
-#Compute a heat index out of 100 (standardized, but non-transformed -- for communication)
-bingmax = arcpy.GetRasterProperties_management('heat_bing_int', 'MAXIMUM')
-bingheatindex = 100*Float(Raster('heat_bing_int'))/float(bingmax.getOutput(0))
-bingheatindex.save('heat_bing_index')
+# #Compute a heat index out of 100 (standardized, but non-transformed -- for communication)
+# bingmax = arcpy.GetRasterProperties_management('heat_bing_int', 'MAXIMUM')
+# bingheatindex = 100*Float(Raster('heat_bing_int'))/float(bingmax.getOutput(0))
+# bingheatindex.save('heat_bing_index')
+
+########################################################################################################################
+# GENERATE HEATMAP FOR PUGET SOUND
+########################################################################################################################
+#Create heatmap - focal statistics
+arcpy.env.extent = bingeuc
+customheatmap(kernel_dir=path.join(rootdir, 'results/bing'), in_raster=path.join(gdb, 'bingeuc1902'),
+              out_gdb = gdb, out_var='bingPS1902', divnum=100, keyw='log300', verbose=True)
+arcpy.ProjectRaster_management(heatbingps, heatbingps + 'proj', ref_cs, resampling_type='NEAREST') #Project
