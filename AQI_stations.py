@@ -326,16 +326,16 @@ for var in covar_sub:
         varfolder_dic[var] = 'monolevel'
 
 #Download all NARR data from 2010 to 2018 for each variable
-# yearlist = range(2014, 2020)
-# for var in varfolder_dic:
-#     if varfolder_dic[var] == 'pressure':
-#         varbase = var.split('.')[0]
-#         downloadNARR(folder=varfolder_dic[var], variable=varbase,
-#                      years=['{0}{1}'.format(year,month) for year in yearlist
-#                             for month in [str(i).zfill(2) for i in range(1,13)]],
-#                      outdir=NARRdir)
-#     else:
-#         downloadNARR(folder=varfolder_dic[var], variable=var, years=yearlist, outdir=NARRdir)
+yearlist = range(2014, 2020)
+for var in varfolder_dic:
+    if varfolder_dic[var] == 'pressure':
+        varbase = var.split('.')[0]
+        downloadNARR(folder=varfolder_dic[var], variable=varbase,
+                     years=['{0}{1}'.format(year,month) for year in yearlist
+                            for month in [str(i).zfill(2) for i in range(1,13)]],
+                     outdir=NARRdir)
+    else:
+        downloadNARR(folder=varfolder_dic[var], variable=var, years=yearlist, outdir=NARRdir)
 
 #Get proj4 from netcdf
 templatef = xr.open_mfdataset(glob.glob(os.path.join(NARRdir, varfolder_dic.keys()[0]+'*')))
@@ -448,7 +448,7 @@ else:
     airdat_uniquedfexp = pickle.load(open(airdat_uniquedfexp_pickle, "rb"))
 
 
-#------------------------------------------------------------------------------------------------------
+#-----------------------------------------------------------------------------------------------------------------------
 # COMPUTE DERIVED VARIABLES
 #-----------------------------------------------------------------------------------------------------------------------
 covar_pm25
@@ -476,35 +476,83 @@ subsetNARRlevel(indir=NARRdir, pattern = 'vwnd.2*.nc', sel_level = 500, outnc = 
 #crain_9x9
 for yeardat in glob.glob(os.path.join(NARRdir, 'crain.*.nc')):
     print('Processing {}...'.format(yeardat))
-    outdat = os.path.join(NARRoutdir, os.path.splitext(os.path.split(yeardat)[1])[0]+'_9x9.nc')
+    outdat = os.path.join(NARRoutdir, '{}_9x9.nc'.format(os.path.splitext(os.path.split(yeardat)[1])[0]))
     if not os.path.exists(outdat):
-        crainf = xr.open_dataset(yeardat, chunks={'time': 10})
-        crainroll = crainf['crain'].rolling(y=9, center=True).mean().rolling(x=9, center=True).mean()
-        crainroll.to_netcdf(outdat)
+        with xr.open_dataset(yeardat, chunks={'time': 10}) as crainf:
+            crainroll = crainf['crain'].rolling(y=9, center=True).mean().rolling(x=9, center=True).mean()
+            crainroll.to_netcdf(outdat)
+        del crainroll
     else:
         print('{} already exists, skipping...'.format(outdat))
 
 #air.sfc 9x9
 for yeardat in glob.glob(os.path.join(NARRdir, 'air.sfc*.nc')):
     print('Processing {}...'.format(yeardat))
-    outdat = os.path.join(NARRoutdir, os.path.splitext(os.path.split(yeardat)[1])[0]+'_9x9.nc')
+    outdat = os.path.join(NARRoutdir, '{}_9x9.nc'.format(os.path.splitext(os.path.split(yeardat)[1])[0]))
     if not os.path.exists(outdat):
-        crainf = xr.open_dataset(yeardat, chunks={'time': 10})
-        crainroll = crainf['air'].rolling(y=9, center=True).mean().rolling(x=9, center=True).mean()
-        crainroll.to_netcdf(outdat)
+        with xr.open_dataset(yeardat, chunks={'time': 10}) as airsfcf:
+            airsfcroll = crainf['air'].rolling(y=9, center=True).mean().rolling(x=9, center=True).mean()
+            airsfcroll.to_netcdf(outdat)
+        del airsfcroll
     else:
         print('{} already exists, skipping...'.format(outdat))
 
+#
+def narr_daynightstat(globpath, outdir):
+    for yeardat in glob.glob(globpath):
+        print('Processing {}...'.format(yeardat))
+        datname = os.path.splitext(os.path.split(yeardat)[1])[0]
+        varname = datname.split('.')[0]
+        outdat = os.path.join(outdir, '{}_daynightstat.nc'.format(datname))
+        if not os.path.exists(outdat):
+            xrd = xr.open_dataset(yeardat, chunks={'time': 10})
+            # Add 8h to datetime so that e.g. 02/01 16h-02/02 8h is 02/02 00*02/02 16h (preceding night is now consider part of that date
+            xrd.coords['shifted_datetime'] = ('time', xrd['time'].values + pd.to_timedelta(timedelta(hours=8)))
+            xrd.coords['shifted_date'] = ('time', xrd.shifted_datetime.dt.floor('d'))
+            # Assign night vs day
+            xrd.coords['daynight'] = ('time', xr.where(xrd.time.dt.hour.isin(range(0, 17)), 'night', 'day'))
+            xrd.crain.where(xrd.daynight == 'night', drop=True).groupby('shifted_date').mean(dim='time')
+
+            #Rewrite
+            # xrd.coords['dateperiod'] = ('time', pd.Series(np.datetime_as_string(xrd.shifted_date)).str[0:10] + xrd.daynight.values)
+            # xrdstat = xr.merge([xrd.groupby('dateperiod').mean(dim='time')[varname].rename({varname: '{}_dnmean'.format()}),
+            #                     xrd.groupby('dateperiod').min(dim='time').crain,
+            #                     xrd.groupby('dateperiod').max(dim='time').crain])
+
+        else:
+            print('{} already exists, skipping...'.format(outdat))
+
+narr_daynightstat(globpath=os.path.join(NARRdir, 'crain.*.nc'), outdir=NARRoutdir)
+
+
+
+
+
 #-------------- Compute day and night extrema -----------------#
-arr = xr.open_dataset(os.path.join(NARRdir, 'air.sfc.2015.nc'))
-#Add 8h to datetime so that e.g. 02/01 16h-02/02 8h is 02/02 00*02/02 16h (preceding night is now consider part of that date
-arr['shifted_datetime'] = arr['time'].values + pd.to_timedelta(timedelta(hours=8))
-arr['shifted_date'] = arr.shifted_datetime.dt.floor('d')
-#Assign night vs day
-arr.coords['daynight'] = xr.where(arr.time.dt.hour.isin(range(0,17)), 'night', 'day')
-arr.coords['dateperiod'] = pd.Series(np.datetime_as_string(arr.shifted_date.values)).str[0:10] + arr.daynight.values
+arr = xr.open_dataset(os.path.join(NARRdir, 'air.sfc.2015.nc'), chunks={'time':10})
+
+
+#Compute mean by dateperiod for each gridcell
+arrdaynightmean = arr.groupby('dateperiod').mean(dim='time')
+
+
 
 #Add dateperiod dimension (https://stackoverflow.com/questions/39626402/add-dimension-to-an-xarray-dataarray)
+
+
+
+a_size = 10
+a_coords = np.linspace(0, 1, a_size)
+
+b_size = 5
+b_coords = np.linspace(0, 1, b_size)
+
+# original 1-dimensional array
+x = xr.DataArray(
+    np.random.random(a_size),
+    coords=[('a', a_coords)])
+
+
 #Stack over x, y, dateperiod
 #Get groupby.mean
 #unstack
