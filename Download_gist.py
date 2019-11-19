@@ -3,6 +3,7 @@ import re
 import requests
 import pandas as pd
 import zipfile
+import gzip
 import io
 import csv
 import arcpy
@@ -113,10 +114,30 @@ def dlfile(url, outpath, outfile=None, fieldnames=None):
                         for row in txtF:
                             writer.writerow(row)
 
+                elif f.headers.get('content-type').lower() == 'application/x-gzip':
+                    outunzip = os.path.splitext(out)[0]
+
+                    #Very inelegant. But trying to download and decompress in memory always messes up files
+                    response = requests.get(url, stream=True)
+                    if response.status_code == 200:
+                        with open(out, 'wb') as f:
+                            f.write(response.raw.read())
+                    with gzip.GzipFile(out, 'rb') as input:
+                        s = input.read()
+                        with open(outunzip, 'wb') as output:
+                            output.write(s)
+
                 else: #Otherwise, just try reading
                     try: #Try writing to local file
                         with open(out, "wb") as local_file:
                             local_file.write(f.read())
+                        # Unzip downloaded file
+                        try:
+                            unzip(out + '.zip')
+                        except:
+                            z = zipfile.ZipFile(io.BytesIO(f.content))
+                            if isinstance(z, zipfile.ZipFile):
+                                z.extractall(os.path.split(out)[0])
                     except Exception: #If fails and is zip, directly download zip in memory
                         print('Try downloading zip in memory...')
                         os.remove(out)
@@ -127,12 +148,6 @@ def dlfile(url, outpath, outfile=None, fieldnames=None):
         else:
             print('File not downloadable...')
 
-        # Unzip downloaded file
-        try:
-            unzip(out)
-        except:
-            if isinstance(z, zipfile.ZipFile):
-                z.extractall(os.path.split(out)[0])
     #handle errors
     except requests.exceptions.HTTPError, e:
         print "HTTP Error:", e.code, url
@@ -286,10 +301,7 @@ def downloadNARR(folder, variable, years, outdir=None):
         for year in years:
             outfile = "{0}.{1}.nc".format(variable, year)
             out = os.path.join(outdir, outfile)
-            if not os.path.exists(out) or os.path.getsize(out)==0L:
-                if os.path.getsize(out)==0L:
-                    print('Deleting empty dataset...')
-                    os.remove(out)
+            if not os.path.exists(out):
                 # ftp download
                 print "downloading " + outfile
                 try:
