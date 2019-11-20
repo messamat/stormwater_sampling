@@ -15,6 +15,7 @@ import time
 import glob
 import dateparser
 import xarray as xr
+import bottleneck # rolling window aggregations are faster and use less memory when bottleneck is installed http://xarray.pydata.org/en/stable/computation.html#rolling-window-operations
 import dask
 import cPickle as pickle
 import rpy2
@@ -53,7 +54,7 @@ if not os.path.exists(sitetab):
     dlfile('https://aqs.epa.gov/aqsweb/airdata/aqs_sites.zip', AQIdir)
 sites = pd.read_csv(sitetab)
 NLCD_imp = os.path.join(rootdir, 'data/NLCD_2016_Impervious_L48_20190405.img') #Based on 2016 dara
-ref_cs = arcpy.Describe(NLCD_imp).SpatialReference
+cs_ref = arcpy.Describe(NLCD_imp).SpatialReference
 
 #Output variables
 outdir = os.path.join(rootdir, 'results/airdata')
@@ -246,12 +247,12 @@ def extractCDFtoDF(indf, pattern, indir, varname, keepcols=None, datecol = None,
         raise ValueError('{} already exists and overwrite==False, '
                          'either set overwrite==True or change outfile'.format(outfile))
 
-def narr_daynightstat(globpath, outdir, statlist = ['mean', 'min', 'max']):
+def narr_daynightstat(globpath, outdir, dnlist = ['day', 'night'], statlist = ['mean', 'min', 'max']):
     for yeardat in glob.glob(globpath):
         print('Processing {}...'.format(yeardat))
         outdat = os.path.join(outdir, '{}_'.format(os.path.splitext(os.path.split(yeardat)[1])[0]))
 
-        if not glob.glob('{}day*'.format(outdat)):
+        if not glob.glob('{0}{1}*'.format(outdat, dnlist[0])):
             datname = os.path.splitext(os.path.split(yeardat)[1])[0]
             varname = datname.split('.')[0]
 
@@ -262,8 +263,14 @@ def narr_daynightstat(globpath, outdir, statlist = ['mean', 'min', 'max']):
             # Assign night vs day
             xrd.coords['daynight'] = ('time', xr.where(xrd.time.dt.hour.isin(range(0, 17)), 'night', 'day'))
 
-            for per in ['day','night']:
+            for per in dnlist:
                 outnc = '{0}{1}'.format(outdat, per)
+
+                #If xarray.DataArray was directly saved to netcdf before being converted manually to xarray.Dataset
+                datavars = xrd.data_vars.keys()
+                if len(datavars) == 1 and datavars[0] == '__xarray_dataarray_variable__':
+                    varname = '__xarray_dataarray_variable__'
+
                 if 'mean' in statlist:
                     xrd[varname].where(xrd.daynight == per, drop=True).\
                         groupby('shifted_date').mean(dim='time').to_netcdf('{}mean.nc'.format(outnc))
@@ -275,6 +282,63 @@ def narr_daynightstat(globpath, outdir, statlist = ['mean', 'min', 'max']):
                         groupby('shifted_date').max(dim='time').to_netcdf('{}max.nc'.format(outnc))
         else:
             print('{} already exists, skipping...'.format(outdat))
+
+def narr_d36stat(globpath, outdir, dstat = None, multidstat = None):
+    xrlist = glob.glob(globpath)
+    if len(xrlist) > 0:
+        for yeardat in xrlist:
+            print('Processing {}...'.format(yeardat))
+            outdat = os.path.join(outdir, '{0}_{1}.nc'.format(os.path.splitext(os.path.split(yeardat)[1])[0], dstat))
+
+            if multidstat is not None:
+                outdat = '{0}_{1}day{2}.nc'.format(os.path.splitext(outdat)[0], multidstat.keys()[0], multidstat.values()[0])
+
+            if not os.path.exists(outdat):
+                datname = os.path.splitext(os.path.split(yeardat)[1])[0]
+                varname = datname.split('.')[0]
+
+                xrd = xr.open_dataset(yeardat, chunks={'x': 10, 'y': 10})
+                if 'shifted_date' in xrd.coords.keys():
+                    xrd.coords['date'] = xrd['shifted_date']
+                    xrd = xrd.rename({'shifted_date':'time'})
+                else:
+                    xrd.coords['date'] = ('time', xrd.time.dt.floor('d'))
+
+                #If xarray.DataArray was directly saved to netcdf before being converted manually to xarray.Dataset
+                datavars = xrd.data_vars.keys()
+                if len(datavars) == 1 and datavars[0] == '__xarray_dataarray_variable__':
+                    varname = '__xarray_dataarray_variable__'
+
+                #Compute daily stat
+                if dstat is not None:
+                    if dstat == 'mean':
+                        xrd = xrd[varname].groupby('date').mean(dim='time')
+                    elif dstat == 'min':
+                        xrd = xrd[varname].groupby('date').min(dim='time')
+                    elif dstat == 'max':
+                        xrd = xrd[varname].groupby('date').max(dim='time')
+                    else:
+                        raise ValueError('Daily statistics is not mean, min, or max')
+
+                if multidstat is not None:
+                    if multidstat.values()[0] == 'mean':
+                        xrd = xrd.rolling(date=multidstat.keys()[0], center=False,
+                                                  min_periods=multidstat.keys()[0]).construct('window').mean('window')
+                    elif multidstat.values()[0] == 'min':
+                        xrd = xrd.rolling(date=multidstat.keys()[0], center=False,
+                                                  min_periods=multidstat.keys()[0]).construct('window').min('window')
+                    elif multidstat.values()[0] == 'max':
+                        xrd = xrd.rolling(date=multidstat.keys()[0], center=False,
+                                                  min_periods=multidstat.keys()[0]).construct('window').max('window')
+                    else:
+                        raise ValueError('Multiday statistics is not mean, min, or max over 3 or 6 days')
+
+                print("Saving {} to netcdf. This might take a while...".format(outdat))
+                xrd.to_dataset(name=datname.split('.')[0]).chunk({'date':5, 'x':9, 'y':9}).to_netcdf(outdat)
+            else:
+                print('{} already exists, skipping...'.format(outdat))
+    else:
+        raise ValueError('globpath does not correspond to any existing dataset')
 
 #-----------------------------------------------------------------------------------------------------------------------
 # SELECT SITES THAT RECORD CHEMICAL CONCENTRATIONS
@@ -313,7 +377,7 @@ len(sites_chem)
 len(pd.unique(sites_chem['UID'])) #Most sites are unique
 
 #-----------------------------------------------------------------------------------------------------------------------
-# DOWNLOAD DAILY METEOROLOGICAL DATA
+# DOWNLOAD DAILY NARR METEOROLOGICAL DATA
 # Get selected covariates from Porter et al. 2015:
 # Investigating the observed sensitivities of air-quality extremes to meteorological drivers via quantile regression
 #-----------------------------------------------------------------------------------------------------------------------
@@ -361,6 +425,17 @@ for var in covar_sub:
     else:
         varfolder_dic[var] = 'monolevel'
 
+#Get proj4 from NARR netcdfs
+templatef = xr.open_mfdataset(glob.glob(os.path.join(NARRdir, varfolder_dic.keys()[0]+'*')))
+crsatt = templatef.variables['Lambert_Conformal'].attrs
+lcc_proj4 = ("+proj=lcc +lat_1={0} +lat_2={1} +lat_0={2} +lon_0={3} +x_0={4} +y_0={5} +units=m +no_def".
+             format(crsatt['standard_parallel'][0],
+                    crsatt['standard_parallel'][1],
+                    crsatt['latitude_of_projection_origin'],
+                    crsatt['longitude_of_central_meridian'],
+                    crsatt['false_easting'],
+                    crsatt['false_northing']))
+
 #Download all NARR data from 2010 to 2018 for each variable
 yearlist = range(2014, 2020)
 for var in varfolder_dic:
@@ -373,23 +448,15 @@ for var in varfolder_dic:
     else:
         downloadNARR(folder=varfolder_dic[var], variable=var, years=yearlist, outdir=NARRdir)
 
-#Get proj4 from netcdf
-templatef = xr.open_mfdataset(glob.glob(os.path.join(NARRdir, varfolder_dic.keys()[0]+'*')))
-crsatt = templatef.variables['Lambert_Conformal'].attrs
-lcc_proj4 = ("+proj=lcc +lat_1={0} +lat_2={1} +lat_0={2} +lon_0={3} +x_0={4} +y_0={5} +units=m +no_def".
-             format(crsatt['standard_parallel'][0],
-                    crsatt['standard_parallel'][1],
-                    crsatt['latitude_of_projection_origin'],
-                    crsatt['longitude_of_central_meridian'],
-                    crsatt['false_easting'],
-                    crsatt['false_northing']))
-
-#Download and merge smoke data
+#-----------------------------------------------------------------------------------------------------------------------
+# DOWNLOAD AND MERGE SMOKE DATA
+#-----------------------------------------------------------------------------------------------------------------------
 smokedates = pd.date_range(start='2014-01-01', end=date.today() - timedelta(days=1)).strftime('%Y%m%d')
 failedlist = []
 for d in smokedates:
     try:
         for ext in ['shp', 'dbf', 'shx']:
+            #Try downloading as .gzip
             smokeurl = "https://satepsanone.nesdis.noaa.gov/pub/volcano/" \
                        "FIRE/HMS_ARCHIVE/{0}/GIS/SMOKE/hms_smoke{1}.{2}".format(d[0:4], d, ext)
             dlfile(url="{}.gz".format(smokeurl), outpath=smokedir
@@ -406,93 +473,146 @@ for d in smokedates:
         failedlist.append(smokeurl)
         pass
 
+#Get rid of empty shapefiles
 #arcpy.env.workspace = smokedir; smokedatlist = arcpy.ListFeatureClasses() crashes with exit code
 for t in glob.glob(os.path.join(smokedir, '*.shp')):
     if arcpy.Describe(t).shapeType == u'Null':
         print('Delete {}, null feature class...'.format(t))
         arcpy.Delete_management(t) #Obnoxious bugging with locks when deleting. Delete manually if needed.
+    else:
+        nameformat = os.path.splitext(os.path.split(t)[1])[0]
+        print('Add feature class name to fcname field for {}...'.format(nameformat))
+        arcpy.AddField_management(t, 'fcname', 'TEXT', field_length = 20)
+        with arcpy.da.UpdateCursor(t, ['fcname']) as cursor:
+            for row in cursor:
+                row[0] = nameformat
+                cursor.updateRow(row)
 
-smokefdic = defaultdict(list)
-for t in glob.glob(os.path.join(smokedir, '*shp')):
-    ftypes = [[f.name, f.type, f.length, f.precision] for f in arcpy.ListFields(t)]
-    smokefdic[str(ftypes)].append(t)
+# smokefdic = defaultdict(list)
+# for t in glob.glob(os.path.join(smokedir, '*shp')):
+#     ftypes_proj = [[f.name, f.type, f.length, f.precision, arcpy.Describe(t).SpatialReference.name] for f in arcpy.ListFields(t)]
+#     smokefdic[str(ftypes_proj)].append(t)
 
-########################################################################################################################
-#TO SOLVE
-# Create FieldMappings object to manage merge output fields
-fieldMappings = arcpy.FieldMappings()
-#Add all fc to fieldMappings
-for t in ['D:/Mathis/ICSL/stormwater\\data/HMS_ARCHIVE_SMOKE\\hms_smoke20190306.shp',
-          'D:/Mathis/ICSL/stormwater\\data/HMS_ARCHIVE_SMOKE\\hms_smoke20161031.shp']:
-    print(t)
-    fieldMappings.addTable(t)
-arcpy.Merge_management(glob.glob(os.path.join(smokedir, '*.shp')), smoke1419, fieldMappings)
-########################################################################################################################
 
+#Merge all smoke polygons for each year separately, making sure that field lengths are homogeneous
+#Do not merge all years at the same time as default Merge crashes and fieldMappings.addTable(t) slows to a crawl
+#after a few hundreds feature classes. Append_management is equally slow
+for yr in range(2014, 2020):
+    outsmokeyr = os.path.join(AQIgdb, 'smoke{}'.format(yr))
+    fclist = glob.glob(os.path.join(smokedir, '*{}*.shp'.format(yr)))
+    if not arcpy.Exists(outsmokeyr):
+        fieldMappings = arcpy.FieldMappings()
+        print('Adding tables to field mapping...')
+        for fc in fclist:
+            fieldMappings.addTable(fc)
+        for fm in fieldMappings.fieldMappings:
+            if fm.outputField.name == 'Start':
+                if fm.outputField.length < 12:
+                    fmstart = fm
+                    outstartf = fmstart.outputField
+                    outstartf.length = 12
+                    fmstart.outputField = outstartf
+                    fieldMappings.removeFieldMap(fieldMappings.findFieldMapIndex('Start'))
+                    fieldMappings.addFieldMap(fmstart)
+
+            if fm.outputField.name == 'End':
+                if fm.outputField.length < 12:
+                    fmend = fm
+                    outendf = fmend.outputField
+                    outendf.length = 12
+                    fmend.outputField = outendf
+                    fieldMappings.removeFieldMap(fieldMappings.findFieldMapIndex('End'))
+                    fieldMappings.addFieldMap(fmend)
+        print('Merging all daily smoke datasets for year {}...'.format(yr))
+        arcpy.Merge_management(fclist, outsmokeyr, fieldMappings)
+    else:
+        print('{} already exists, skipping...'.format(outsmokeyr))
+        
+#Merge all years together
+arcpy.Merge_management([os.path.join(AQIgdb, 'smoke{}'.format(yr)) for yr in range(2014,2020)], smoke1419)
+
+#Project to Albers Equal Area (same as rest of the analysis)
+arcpy.DefineProjection_management(smoke1419, coor_system=arcpy.SpatialReference(4326))
+arcpy.Project_management(smoke1419, '{}_aea'.format(smoke1419), out_coor_system=cs_ref)
 
 #-----------------------------------------------------------------------------------------------------------------------
 # COMPUTE DERIVED VARIABLES
+# Does not include wind direction
 #-----------------------------------------------------------------------------------------------------------------------
-#Get fired data
-#Porter et al. 2015 used: MODIS Global Monthly Fire Location Product
-#https://www.ospo.noaa.gov/Products/land/hms.html
-#https://satepsanone.nesdis.noaa.gov/pub/FIRE/HMS/GIS/ARCHIVE/
-#https://www.ospo.noaa.gov/Products/land/fire.html: try ASDTA Smoke-East AOD and ASDTA Smoke-West AOD
-
 #-------------- subset datasets by pressure level
 subsetNARRlevel(indir=NARRdir, pattern = 'hgt.*.nc', sel_level = 850, outnc = os.path.join(NARRoutdir, 'hgt.850.nc'))
 subsetNARRlevel(indir=NARRdir, pattern = 'vwnd.2*.nc', sel_level = 500, outnc = os.path.join(NARRoutdir, 'vwnd.500.nc'))
 subsetNARRlevel(indir=NARRdir, pattern = 'air.20*.nc', sel_level = 700, outnc = os.path.join(NARRoutdir, 'air.700.nc'))
 
 #-------------- compute derived variables -------------------
-#lts (lower-tropospheric stability) = potential temperatures (700 hPa) - potential temperatures (surface)
+#lts
+# (lower-tropospheric stability) = potential temperatures (700 hPa) - potential temperatures (surface)
 #To compute potential temperature at 700 hPa: PT700 = Temperature @ 700 hPa * (standard pressure/700)^(gas constant/specific heat)
 #with standard pressure = 1000 hPa and gas constant/specific heat =  0.286
 #So lts = (temperature_700*(1000/700)^0.286)- potential temp_surface
-# for yeardat in glob.glob(os.path.join(NARRdir, 'air.700*.nc')):
-#     print('Processing {}...'.format(yeardat))
-#     outdat = os.path.join(NARRoutdir, '{}.nc'.format(os.path.splitext(os.path.split(yeardat)[1])[0]))
-#     if not os.path.exists(outdat):
-#         with xr.open_dataset(yeardat, chunks={'time': 10}) as airsfcf:
-#             airsfcroll = crainf['air'].rolling(y=9, center=True).mean().rolling(x=9, center=True).mean()
-#             airsfcroll.to_netcdf(outdat)
-#         del airsfcroll
-#     else:
-#         print('{} already exists, skipping...'.format(outdat))
-#
-# for yeardat in glob.glob(os.path.join(NARRdir, 'pottmp.hl1.*.nc')):
-#     print('Processing {}...'.format(yeardat))
-#     xr.open_dataset(yeardat, chunks={'time': 10})
 
-#rpi (recirculation potential index) = 1 - L/S
+air700 = xr.open_dataset(os.path.join(NARRoutdir, 'air.700.nc'), chunks={'time':20}).drop('level')
+for yeardat in glob.glob(os.path.join(NARRdir, 'pottmp.sfc.*.nc')):
+    print('Processing {}...'.format(yeardat))
+    outdat = os.path.join(NARRoutdir,
+                          'lts.{}.nc'.format(re.compile('[0-9]{4}').search(os.path.split(yeardat)[1]).group()))
+    if not os.path.exists(outdat):
+        with xr.open_dataset(yeardat, chunks={'time': 20}) as pottmp_sfc:
+            airpottmp_join = xr.merge([air700, pottmp_sfc], join='inner')
+            airpottmp_join['pottmp700'] = airpottmp_join.air*pow(1000.0/700.0, 0.286)
+            lts = airpottmp_join.pottmp700 - airpottmp_join.pottmp
+            ltsdt = lts.to_dataset(name  ='lts')
+            print('Saving to netdcdf. This might take a while... {}'.format(outdat))
+            ltsdt.to_netcdf(outdat)
+            del lts
+            del ltsdt
+    else:
+        print('{} already exists, skipping...'.format(outdat))
+
+#wspd (windspeed at 10 m) and rpi (recirculation potential index) = 1 - L/S
     #the vector sum magnitude (L) and scalar sum (S) of surface wind speeds over the previous 24 h (Allwine and Whitemane 1994)
     #https://www.sciencedirect.com/science/article/abs/pii/1352231094900485
     #L = sqrt((3*sumforpast24h(uwind))^2+(3*sumforpast24h(vwind))^2)
     #S = 3*sumoverpast24h(uwind^2+vwind^2)^1/2
 for yr in range(2014, 2020):
     print('Processing {}...'.format(yr))
-    outdat = os.path.join(NARRoutdir, 'rpi.{}.p'.format(yr))
-    if not os.path.exists(outdat):
+    outwspd = os.path.join(NARRoutdir, 'wspd.10m.{}.nc'.format(yr))
+    outrpi = os.path.join(NARRoutdir, 'rpi.{}.nc'.format(yr))
+
+    if not (os.path.exists(outrpi) and os.path.exists(outwspd)):
         uvw = xr.merge([xr.open_dataset(os.path.join(NARRdir, 'uwnd.10m.{}.nc'.format(yr)),
-                                        chunks={'time': 292, 'x': 10, 'y': 10}),
+                                        chunks={'x': 10, 'y': 10}),
                         xr.open_dataset(os.path.join(NARRdir, 'vwnd.10m.{}.nc'.format(yr)),
-                                        chunks={'time': 292, 'x': 10, 'y': 10}).vwnd])
+                                        chunks={'x': 10, 'y': 10}).vwnd])
 
-        #Used .construct('window').sum('window') rather than simply .sum() due to MemoryError issues (see https://github.com/pydata/xarray/issues/3165)
-        rpi = (pow((3*uvw.uwnd.rolling(time=8, center=False, min_periods=8).construct('window').sum('window')**2) +
-                (3*uvw.vwnd.rolling(time=8, center=False, min_periods=8).construct('window').sum('window')**2), 0.5)/
-               3*pow(uvw.uwnd**2 + uvw.vwnd**2, 0.5).rolling(time=8, center=False, min_periods=8).construct('window').sum('window'))
+        # Compute wspd
+        if not os.path.exists(outwspd):
+            wspd = pow(uvw.uwnd**2 + uvw.vwnd**2, 0.5)
+            wspddt = wspd.to_dataset(name='wspd')
+            print('Saving {} to netcdf. This might take hours...'.format(outwspd))
+            wspddt.to_netcdf(outwspd)
+            del wspd
+            del wspddt
 
-########################################################################################################################
-        # TO SOLVE
-        # Leads to memory error
-        # rpidt = rpi.to_dataset(name  ='rpi').chunk({'time':'auto', 'x':'auto', 'y':'auto'})
-        # dask.config.set(scheduler='single-threaded') #Based on https://github.com/pydata/xarray/issues/729 and https://blog.dask.org/2017/06/15/dask-0.15.0
-        # rpitry.to_netcdf(outdat) #If this really doesn't work, will pickle it
-########################################################################################################################
+        # Compute rpi
+        if not os.path.exists(outrpi):
+            #Used .construct('window').sum('window') rather than simply .sum() due to MemoryError issues (see https://github.com/pydata/xarray/issues/3165)
+            rpi = (pow((3*uvw.uwnd.rolling(time=8, center=False, min_periods=8).construct('window').sum('window')**2) +
+                    (3*uvw.vwnd.rolling(time=8, center=False, min_periods=8).construct('window').sum('window')**2), 0.5)/
+                   3*pow(uvw.uwnd**2 + uvw.vwnd**2, 0.5).rolling(time=8, center=False, min_periods=8).construct('window').sum('window'))
 
-        del rpi
-        del uvw
+            # Can easily lead to memory error. Switching to single-threaded scheduler did not help
+            # Need to chunk but will likely also lead to error if chunking across time — must mess with the rolling
+            # Lazy computing pushes all calculations to .to_netcdf
+            # If does not work again. Try doing a first rolling, saving. Then another rolling, saving. Then combining, etc.
+            rpidt = rpi.to_dataset(name  ='rpi')
+            print('Saving {} to netcdf. This might take hours...'.format(outrpi))
+            rpidt.to_netcdf(outrpi)
+
+            del rpi
+            del rpidt
+            del uvw
+
     else:
         print('{} already exists, skipping...'.format(outdat))
 
@@ -501,10 +621,16 @@ for yeardat in glob.glob(os.path.join(NARRdir, 'crain.*.nc')):
     print('Processing {}...'.format(yeardat))
     outdat = os.path.join(NARRoutdir, '{}_9x9.nc'.format(os.path.splitext(os.path.split(yeardat)[1])[0]))
     if not os.path.exists(outdat):
-        with xr.open_dataset(yeardat, chunks={'time': 10}) as crainf:
-            crainroll = crainf['crain'].rolling(y=9, center=True).mean().rolling(x=9, center=True).mean()
-            crainroll.to_netcdf(outdat)
+        with xr.open_dataset(yeardat, chunks={'time':292, 'x':10}) as crainf:
+            crainrollx = crainf['crain'].rolling(y=9, center=True).construct('window').mean('window')
+            crainrollxdt = crainrollx.to_dataset(name='crain')
+            crainrollxdt.to_netcdf(outdat)
+        with xr.open_dataset(outdat, chunks={'time': 292, 'y': 10}) as crainf:
+            crainroll = crainf['crain'].rolling(x=9, center=True).construct('window').mean('window')
+            crainrolldt = crainroll.to_dataset(name='crain')
+            crainrolldt.to_netcdf(outdat)
         del crainroll
+        del crainrolldt
     else:
         print('{} already exists, skipping...'.format(outdat))
 
@@ -513,42 +639,41 @@ for yeardat in glob.glob(os.path.join(NARRdir, 'air.sfc*.nc')):
     print('Processing {}...'.format(yeardat))
     outdat = os.path.join(NARRoutdir, '{}_9x9.nc'.format(os.path.splitext(os.path.split(yeardat)[1])[0]))
     if not os.path.exists(outdat):
-        with xr.open_dataset(yeardat, chunks={'time': 10}) as airsfcf:
+        with xr.open_dataset(yeardat, chunks={'time':5}) as airsfcf:
             airsfcroll = airsfcf['air'].rolling(y=9, center=True).mean().rolling(x=9, center=True).mean()
-            airsfcroll.to_netcdf(outdat)
+            airsfcrolldt = airsfcroll.to_dataset(name='air')
+            airsfcrolldt.to_netcdf(outdat)
         del airsfcroll
     else:
         print('{} already exists, skipping...'.format(outdat))
 
-#
-narr_daynightstat(globpath=os.path.join(NARRdir, 'shum.2m*.nc'), outdir=NARRoutdir, statlist = ['mean', 'min'])
+#Night/Day stats
+narr_daynightstat(globpath=os.path.join(NARRdir, 'shum.2m*.nc'), outdir=NARRoutdir, statlist=['mean', 'min'])
+narr_daynightstat(globpath=os.path.join(NARRdir, 'wspd.10m*.nc'), outdir=NARRoutdir, statlist=['mean', 'min'])
+narr_daynightstat(globpath=os.path.join(NARRdir, 'dswrf*.nc'), outdir=NARRoutdir, dnlist=['day'], statlist=['min'])
+narr_daynightstat(globpath=os.path.join(NARRdir, 'lftx4*.nc'), outdir=NARRoutdir, dnlist=['night'], statlist=['min'])
+narr_daynightstat(globpath=os.path.join(NARRoutdir, 'lts*.nc'), outdir=NARRoutdir, dnlist=['day'], statlist=['min'])
+narr_daynightstat(globpath=os.path.join(NARRoutdir, 'air.sfc*_9x9.nc'), outdir=NARRoutdir, dnlist=['night'], statlist=['max']) #'__xarray_dataarray_variable__'
+
+#Compute 1-, 3- and 6-day maxima, minima, and means
+narr_d36stat(globpath=os.path.join(NARRdir, 'hpbl*.nc'), outdir=NARRoutdir, dstat = 'mean') #to run
+narr_d36stat(globpath=os.path.join(NARRoutdir, 'dswrf*daymin*.nc'), outdir=NARRoutdir, multidstat = {6: 'max'}) #to run
 
 
-#air.sfc_9x9 - nightmin
-#crain_9x9 - nightmax
-#lts_daymin
-#uwnddir.10m - daymean
-#uwnddir.19m_nightmean
-#vwnd.500 - daymax
-#wspd.10m-daymax
-#wspd.10m-nightmax
-#dswrf-daymin
-#lftx4-nightmin
-#shum.2m-nightmin
 
 
-#Compute 3- and 6-day maxima, minima, and means
+narr_d36stat(globpath=os.path.join(NARRoutdir, 'crain*9x9*.nc'), outdir=NARRoutdir, dstat = 'max', multidstat = {6: 'mean'}) #to run
+
+
+#globpath=os.path.join(NARRoutdir, 'wspd.10m*.nc')
+globpath=
+outdir=NARRoutdir
+dstat = 'max'
+multidstat = {3: 'mean'}
+
 
 #Compute 1-day delta variable
 
-
-
-#Compute daily recirculation potential index (RPI)
-"surface wind speeds based on the ratio between the vector sum magnitude (L) and scalar sum (S) of wind speeds over the" \
-"previous 24 h (Levy et al., 2009)"
-
-#Compute lower-tropospheric stability (LTS)
-# difference between surface and 700 hPa potential temperatures
 
 #-----------------------------------------------------------------------------------------------------------------------
 # CREATE POINT SHAPEFILE AND BUFFER
@@ -569,13 +694,13 @@ sites_gpd_lambers = sites_gpd_lambers[sites_gpd_lambers['Longitude'] != 0]
 
 #Project them all to same projection as NLCD data (and all other data)
 aea_proj4 = ("+proj=aea +lat_1={0} +lat_2={1} +lat_0={2} +lon_0={3} +x_0={4} +y_0={5} "
-             "+ellps=GRS80 +datum=NAD83 +units=m +no_def".
-             format(ref_cs.standardParallel1,
-                    ref_cs.standardParallel2,
-                    ref_cs.latitudeOfOrigin,
-                    ref_cs.centralMeridian,
-                    ref_cs.falseEasting,
-                    ref_cs.falseNorthing))
+             "+datum=WGS84 +units=m +no_def".
+             format(cs_ref.standardParallel1,
+                    cs_ref.standardParallel2,
+                    cs_ref.latitudeOfOrigin,
+                    cs_ref.centralMeridian,
+                    cs_ref.falseEasting,
+                    cs_ref.falseNorthing))
 sites_gpd = pd.concat([sites_wgs84.to_crs(crs=aea_proj4), sites_nad27.to_crs(crs=aea_proj4), sites_nad83.to_crs(crs=aea_proj4)])
 sites_gpd['x'], sites_gpd['y'] = sites_gpd.geometry.x, sites_gpd.geometry.y
 #Remove outliers with lon=0
