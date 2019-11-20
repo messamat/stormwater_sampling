@@ -9,6 +9,7 @@ import sys
 import urllib
 import urllib2
 import io
+import glob
 from BeautifulSoup import BeautifulSoup
 import zipfile
 import numpy as np
@@ -37,18 +38,17 @@ rootdir = "D:\Mathis\ICSL\stormwater"
 USDOTdir = os.path.join(rootdir, "data\USDOT_0319")
 NTMdir = os.path.join(rootdir, "data\NTM_0319")
 resdir = os.path.join(rootdir, 'results/usdot')
-PSgdb=os.path.join(rootdir,'results/PSOSM.gdb')
 AQIgdb = os.path.join(rootdir, 'results/airdata/AQI.gdb')
 
 NED19proj = os.path.join(rootdir, 'results/ned19_psproj')
 NED13proj = os.path.join(rootdir, 'results/ned13_psproj')
 
 XRFsites = os.path.join(rootdir, 'data/field_data/sampling_sites_edit.shp')
-XRFsites_aea = os.path.join(PSgdb, 'XRFsites_aea')
 XRFsiteshull = os.path.join(rootdir, 'results/XRFsites_convexhull.shp')
 XRFsiteshull_aea = os.path.join(rootdir, 'results/XRFsites_convexhull_aea.shp')
-Binggdb = os.path.join(rootdir, 'results/bing/postprocess.gdb')
-bingeuc = os.path.join(Binggdb, 'bingeuc1902')
+bingdir = os.path.join(rootdir, 'results/bing/')
+binggdb = os.path.join(bingdir, 'postprocess.gdb')
+bingeuc = os.path.join(binggdb, 'bingeuc1902')
 
 NLCD_reclass = os.path.join(rootdir, 'results/LU.gdb/NLCD_reclass_final')
 NLCD_imp = os.path.join(rootdir, 'data/NLCD_2016_Impervious_L48_20190405.img') #Zipped
@@ -81,6 +81,7 @@ AQIgdb = os.path.join(AQIdir, 'AQI.gdb')
 AQIaadttab = os.path.join(AQIdir, 'airsites_aadtlog100')
 AQIbingtab = os.path.join(AQIdir, 'airsites_binglog300')
 AQIimptab = os.path.join(AQIdir, 'airsites_impmean')
+roadAQI = os.path.join(AQIgdb, 'AQI_hpmstigerinters')
 
 #Create gdb for analysis
 if arcpy.Exists(AQIgdb):
@@ -135,8 +136,19 @@ PStransitras = os.path.join(rootdir, 'results/transit.gdb/PStransit_ras')
 if not arcpy.Exists(usdotgdb):
     arcpy.CreateFileGDB_management(resdir, out_name = 'usdot')
 
-PSgdb = os.path.join(rootdir, 'results/PSpredictions.gdb')
-XRFsites_projattri = os.path.join(PSgdb, 'XRFsites_projallattri')
+XRFsites_aea = os.path.join(pollutgdb, 'XRFsites_aea')
+XRFsites_aeaattri = os.path.join(pollutgdb, 'XRFsites_projallattri')
+
+def Iter_ListRaster(workspaces, wildcard):
+    "Build list of all rasters in list of workspaces that correspond to a wildcard"
+    outlist = []
+    for ws in workspaces:
+        arcpy.env.workspace = ws
+        rlist = arcpy.ListRasters(wildcard)
+        if rlist is not None:
+            outlist.extend([os.path.join(ws, r) for r in rlist if os.path.join(ws, r) not in outlist])
+    arcpy.ClearEnvironment('Workspace')
+    return outlist
 
 ########################################################################################################################
 # COMPUTE FUNCTIONAL-CLASS BASED AADT AVERAGE FOR EVERY STATE
@@ -697,26 +709,19 @@ customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=os.pat
 #Bing
 #See Bing_format_PS.py (for Sound) and Bing_format_parallel.py (for AQI stations)
 
-
 ########################################################################################################################
 # GET TREES HEATMAP VALUES
 # Select candidate species of trees from the City of Seattle's street-tree dataset and extract heatmap values at their
 # location
 ########################################################################################################################
 #Get heat values for all trees
-def Iter_ListRaster(workspaces, wildcard):
-    "Build list of all rasters in list of workspaces that correspond to a wildcard"
-    outlist = []
-    for ws in workspaces:
-        arcpy.env.workspace = ws
-        rlist = arcpy.ListRasters(wildcard)
-        if rlist is not None:
-            outlist.extend([os.path.join(ws, r) for r in rlist if os.path.join(ws, r) not in outlist])
-    arcpy.ClearEnvironment('Workspace')
-    return outlist
+heatlist = Iter_ListRaster([pollutgdb, transitgdb], 'heat*') + glob.glob(os.path.join(bingdir, 'heat*bing*proj.tif')) +\
+                       [NLCD_reclass_PS, NLCD_imp_PS, NLCD_imp_PS + '_mean.tif']
 
-heatlist = Iter_ListRaster([pollutgdb, Binggdb, transitgdb], 'heat*') +\
-                       [NLCD_reclass_PS + NLCD_imp_PS, NLCD_imp_PS + '_mean.tif']
+#Make sure of the projection of all layers
+# for heatras in heatlist:
+#     print(heatras)
+#     print(arcpy.Describe(heatras).SpatialReference.name)
 
 #Project
 arcpy.Project_management(XRFsites, XRFsites_aea, cs_ref)
@@ -749,14 +754,10 @@ arcpy.ClearEnvironment("snapRaster")
 # SUBSET HPMS TIGER AND GET AADT HEATMAP VALUES AROUND AQI STATIONS
 ########################################################################################################################
 #Intersect roads with buffers
-roadAQI = os.path.join(AQIgdb, 'AQI_hpmstigerinters')
 arcpy.Intersect_analysis([AQIsites_bufunion, hpmstigerproj], roadAQI, join_attributes='ALL')
 
+############################## TO RUN ##################################################################################
 ##########Run AQI_AADTheatmap.py##################
-
-#Problem is: the different projection and extent used in rasterizing hpmstiger for aadt makes the roads have a different
-#structure/shape as the hpmstiger raster used for Seattle and the Puget Sound. this in turns leads to sometimes large
-#differences in the heatmap values after focal statistics...
 
 #For each station, extract aadt_filled
 heataadt_list = [os.path.join(dirpath, file)
@@ -803,8 +804,10 @@ arcpy.Merge_management(tablist, output = AQIaadttab)
 ########################################################################################################################
 #Compute focal stats within AQI buffers
 arcpy.env.mask = AQIsites_bufunion
+arcpy.env.snapRaster = NLCD_imp
 imp_mean = arcpy.sa.FocalStatistics(NLCD_imp, neighborhood = NbrCircle(3, "CELL"), statistics_type= 'MEAN')
 imp_mean.save(NLCD_imp_AQI_mean)
 
+#STILL TO DO - 20191119
 #Extract smoothed imperviousness values at AQI stations
 arcpy.sa.ExtractMultiValuesToPoints(AQIsites, NLCD_imp_AQI_mean, bilinear_interpolate_values = 'NONE')
