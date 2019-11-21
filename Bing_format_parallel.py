@@ -15,9 +15,9 @@ from heatmap_custom import *
 arcpy.CheckOutExtension("Spatial")
 arcpy.env.overwriteOutput=True
 #rootdir = 'F:/Mathis/Levin_Lab/stormwater'
-#res = #os.path.join(rootdir, 'results/airdata/tiles')
-rootdir = 'F:/Mathis/Levin_Lab/stormwater'
-res = os.path.join(rootdir, 'results/bing')
+rootdir = 'D:/Mathis/ICSL/stormwater'
+res = os.path.join(rootdir, 'results/airdata/tiles')
+cs_ref = arcpy.Describe(os.path.join(rootdir, 'data/NLCD_2016_Impervious_L48_20190405.img')).SpatialReference
 
 'Useful resources:' \
 '- https://pythongisandstuff.wordpress.com/2013/07/31/using-arcpy-with-multiprocessing-part-3/' \
@@ -32,65 +32,71 @@ def bingmean(tile, tilediceven, Neven, tiledicodd, Nodd, tiledic2am, N2am, tiled
     outras = 'bing{}'.format(tile)
     print(outras)
 
-    if not arcpy.Exists(outras):
-        tmpdir = os.path.join(os.path.dirname(outdir),'tmp_{}'.format(str(tile)))
-        try:
-            os.mkdir(tmpdir)
-            arcpy.env.scratchWorkspace = tmpdir #Not having a separate scratch workspace can lead to bad locking issues
+    outraslist = [os.path.join(outdir, 'heat{0}{1}{2}'.format(outras, os.path.splitext(kertxt)[0][7:], '.tif')) \
+                  for kertxt in os.listdir(kernel_dir) \
+                  if  re.compile('kernel.*' + keyw).match(kertxt)]
 
-            arcpy.env.extent = "MAXOF"
-            #Compute mean bing index
-            bingodd = arcpy.sa.Float(arcpy.sa.CellStatistics(tiledicodd[tile], statistics_type='SUM', ignore_nodata='DATA')) / Nodd
-            bingeven = arcpy.sa.Float(arcpy.sa.CellStatistics(tilediceven[tile], statistics_type='SUM', ignore_nodata='DATA')) / Neven
+    if not all([os.path.exists(r) for r in outraslist]):
+        if len(tiledicodd[tile])>0 and len(tilediceven[tile])>0:
+            tmpdir = os.path.join(os.path.dirname(outdir),'tmp_{}'.format(str(tile)))
+            try:
+                os.mkdir(tmpdir)
+                arcpy.env.scratchWorkspace = tmpdir #Not having a separate scratch workspace can lead to bad locking issues
 
-            #Remove road closure pixels (classified as maximum congestion - red - for a long duration often including at night) and make sure not to average over logo pixels as would half values
-            #change threshold for bingmean3am and 2am to 3 when have more than one day of data
-            #Think of simplifying logo approach with http://geoinformaticstutorial.blogspot.com/2012/09/reading-raster-data-with-python-and-gdal.html setgeotransform and getgeotransform with one signle logopix tile
-            if len(tiledic2am[tile]) > 0 & len(tiledic3am[tile]) > 0:
-                bingmean2am = arcpy.sa.Float(arcpy.sa.CellStatistics(tiledic2am[tile], statistics_type='SUM', ignore_nodata='DATA')) / N2am
-                bingmean3am = arcpy.sa.Float(arcpy.sa.CellStatistics(tiledic3am[tile], statistics_type='SUM', ignore_nodata='DATA')) / N3am
-                bingclean = Int(1000*
-                                Con(IsNull(bingeven), #If even hours are null
-                                    Con(IsNull(bingodd), bingodd,
-                                        Con((bingodd > 0.1),
-                                            Con((bingodd < 2),
-                                                Con(IsNull(bingmean3am), bingodd,
-                                                    Con((bingmean3am< 3), bingodd
+                arcpy.env.extent = "MAXOF"
+                #Compute mean bing index
+                bingodd = arcpy.sa.Float(arcpy.sa.CellStatistics(tiledicodd[tile], statistics_type='SUM', ignore_nodata='DATA')) / Nodd
+                bingeven = arcpy.sa.Float(arcpy.sa.CellStatistics(tilediceven[tile], statistics_type='SUM', ignore_nodata='DATA')) / Neven
+
+                #Remove road closure pixels (classified as maximum congestion - red - for a long duration often including at night) and make sure not to average over logo pixels as would half values
+                #change threshold for bingmean3am and 2am to 3 when have more than one day of data
+                #Think of simplifying logo approach with http://geoinformaticstutorial.blogspot.com/2012/09/reading-raster-data-with-python-and-gdal.html setgeotransform and getgeotransform with one signle logopix tile
+                if len(tiledic2am[tile]) > 0 & len(tiledic3am[tile]) > 0:
+                    bingmean2am = arcpy.sa.Float(arcpy.sa.CellStatistics(tiledic2am[tile], statistics_type='SUM', ignore_nodata='DATA')) / N2am
+                    bingmean3am = arcpy.sa.Float(arcpy.sa.CellStatistics(tiledic3am[tile], statistics_type='SUM', ignore_nodata='DATA')) / N3am
+                    bingclean = Int(1000*
+                                    Con(IsNull(bingeven), #If even hours are null
+                                        Con(IsNull(bingodd), bingodd,
+                                            Con((bingodd > 0.1),
+                                                Con((bingodd < 2),
+                                                    Con(IsNull(bingmean3am), bingodd,
+                                                        Con((bingmean3am< 3), bingodd
+                                                            )
                                                         )
-                                                    )
-                                                ),
-                                            Con((bingodd < 2),
-                                                Con(IsNull(bingmean3am), (bingodd*Nodd)/(Nodd+Neven),
-                                                    Con((bingmean3am< 3), (bingodd*Nodd)/(Nodd+Neven)
-                                                        )
-                                                    )
-                                                )
-                                            )
-                                        ),
-                                    Con(IsNull(bingodd), #If odd hours are null
-                                        Con((bingeven > 0.1),
-                                            Con((bingeven < 2),
-                                                Con(IsNull(bingmean2am), bingeven,
-                                                    Con((bingmean2am< 3), bingeven
-                                                        )
-                                                    )
-                                                ),
-                                            Con((bingeven < 2),
-                                                Con(IsNull(bingmean2am), (bingeven*Neven)/(Nodd+Neven),
-                                                    Con((bingmean2am< 3), (bingeven*Neven)/(Nodd+Neven)
+                                                    ),
+                                                Con((bingodd < 2),
+                                                    Con(IsNull(bingmean3am), (bingodd*Nodd)/(Nodd+Neven),
+                                                        Con((bingmean3am< 3), (bingodd*Nodd)/(Nodd+Neven)
+                                                            )
                                                         )
                                                     )
                                                 )
                                             ),
-                                        Con((bingeven < 2) & (bingodd < 2), #If neither even nor odd hours are null
-                                            Con(IsNull(bingmean2am),
-                                                Con(IsNull(bingmean3am), bingeven*Neven+bingodd*Nodd/(Nodd+Neven),
-                                                    Con(bingmean3am < 3, bingeven*Neven+bingodd*Nodd/(Nodd+Neven)
+                                        Con(IsNull(bingodd), #If odd hours are null
+                                            Con((bingeven > 0.1),
+                                                Con((bingeven < 2),
+                                                    Con(IsNull(bingmean2am), bingeven,
+                                                        Con((bingmean2am< 3), bingeven
+                                                            )
                                                         )
                                                     ),
-                                                Con(bingmean2am < 3,
+                                                Con((bingeven < 2),
+                                                    Con(IsNull(bingmean2am), (bingeven*Neven)/(Nodd+Neven),
+                                                        Con((bingmean2am< 3), (bingeven*Neven)/(Nodd+Neven)
+                                                            )
+                                                        )
+                                                    )
+                                                ),
+                                            Con((bingeven < 2) & (bingodd < 2), #If neither even nor odd hours are null
+                                                Con(IsNull(bingmean2am),
                                                     Con(IsNull(bingmean3am), bingeven*Neven+bingodd*Nodd/(Nodd+Neven),
                                                         Con(bingmean3am < 3, bingeven*Neven+bingodd*Nodd/(Nodd+Neven)
+                                                            )
+                                                        ),
+                                                    Con(bingmean2am < 3,
+                                                        Con(IsNull(bingmean3am), bingeven*Neven+bingodd*Nodd/(Nodd+Neven),
+                                                            Con(bingmean3am < 3, bingeven*Neven+bingodd*Nodd/(Nodd+Neven)
+                                                                )
                                                             )
                                                         )
                                                     )
@@ -98,50 +104,58 @@ def bingmean(tile, tilediceven, Neven, tiledicodd, Nodd, tiledic2am, N2am, tiled
                                             )
                                         )
                                     )
-                                )
-            else:
-                bingclean = Int(1000*
-                                Con(IsNull(bingeven), #If even hours are null
-                                    Con(IsNull(bingodd), bingodd,
-                                        Con((bingodd > 0.1),
-                                            Con((bingodd < 2), bingodd),
-                                            Con((bingodd < 2), (bingodd*Nodd)/(Nodd+Neven))
-                                            )
-                                        ),
-                                    Con(IsNull(bingodd), #If odd hours are null
-                                        Con((bingeven > 0.1),
-                                            Con((bingeven < 2), bingeven),
-                                            Con((bingeven < 2),(bingeven*Neven)/(Nodd+Neven))
+                else:
+                    bingclean = Int(1000*
+                                    Con(IsNull(bingeven), #If even hours are null
+                                        Con(IsNull(bingodd), bingodd,
+                                            Con((bingodd > 0.1),
+                                                Con((bingodd < 2), bingodd),
+                                                Con((bingodd < 2), (bingodd*Nodd)/(Nodd+Neven))
+                                                )
                                             ),
-                                        Con((bingeven < 2) & (bingodd < 2), #If neither even nor odd hours are null
-                                            bingeven*Neven+bingodd*Nodd/(Nodd+Neven)
+                                        Con(IsNull(bingodd), #If odd hours are null
+                                            Con((bingeven > 0.1),
+                                                Con((bingeven < 2), bingeven),
+                                                Con((bingeven < 2),(bingeven*Neven)/(Nodd+Neven))
+                                                ),
+                                            Con((bingeven < 2) & (bingodd < 2), #If neither even nor odd hours are null
+                                                bingeven*Neven+bingodd*Nodd/(Nodd+Neven)
+                                                )
                                             )
                                         )
                                     )
-                                )
-            #Compute heatmap
-            customheatmap(kernel_dir=kernel_dir, in_raster=bingclean, scratch_dir = tmpdir,
-                      out_gdb=outdir, out_var= outras, divnum=100, keyw=keyw, ext='.tif',
-                      verbose = False)
-            print('Done generating heatmap')
-        except Exception:
-            traceback.print_exc()
-            arcpy.Delete_management(tmpdir)
-        if arcpy.Exists(tmpdir):
-            arcpy.Delete_management(tmpdir)
+                #Compute heatmap
+                customheatmap(kernel_dir=kernel_dir, in_raster=bingclean, scratch_dir = tmpdir,
+                          out_gdb=outdir, out_var= outras, divnum=100, keyw=keyw, ext='.tif',
+                          verbose = False)
+                print('Done generating heatmap')
+            except Exception:
+                traceback.print_exc()
+                arcpy.Delete_management(tmpdir)
+            if arcpy.Exists(tmpdir):
+                arcpy.Delete_management(tmpdir)
+        else:
+            print('Either even- or odd-hour tiles are missing.')
     else:
         print('{} already exists...'.format(outras))
+
+    for ras in outraslist:
+        outprojras = '{}proj.tif'.format(os.path.splitext(ras)[0])
+        if os.path.exists(ras):
+            if not os.path.exists(outprojras):
+                print('Projecting {0} to {1}...'.format(ras, cs_ref.name))
+                arcpy.ProjectRaster_management(ras, outprojras, cs_ref, resampling_type='NEAREST')
+        else:
+            print('{} does not exist...'.format(ras))
     #bingclean.save(outras) #DO NOT OUTPUT TO GRID IN PARALLEL
     print(time.time()-tic)
-
 
 if __name__ == '__main__':
     arcpy.env.workspace = res
     # Create list of layers
-    regextile = re.compile("^[0-9]{6}_[0-9]{2}_[0-9]{2}.*mlc[.]tif$")
+    regextile = re.compile("^[0-9]{6}_[0-9]{2}_[0-9]{2}_[0-9]{3}_[0-9]{3}_.*[.]tif$")
     mlclist = list(itertools.chain.from_iterable( #To unnest list
         [filter(regextile.search, filenames) for  (dirpath, dirnames, filenames) in os.walk(res)]))
-
     #Create dictionary associating each tile with all of the hourly data available for it and get a sorted list of all date times
     tileeven = defaultdict(list)
     tileodd = defaultdict(list)
