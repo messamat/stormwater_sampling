@@ -1,4 +1,7 @@
+#Make sure to run this with 64bit Python. Even chunking won't help.
+
 import mendeleev
+#import arcpy
 import pandas as pd
 import itertools
 import os
@@ -47,8 +50,8 @@ if not os.path.exists(sitetab):
     print('Site tab does not exist...')
     dlfile('https://aqs.epa.gov/aqsweb/airdata/aqs_sites.zip', AQIdir)
 sites = pd.read_csv(sitetab)
-NLCD_imp = os.path.join(rootdir, 'data/NLCD_2016_Impervious_L48_20190405.img') #Based on 2016 dara
-cs_ref = arcpy.Describe(NLCD_imp).SpatialReference
+NLCD_imp = os.path.join(rootdir, 'data/NLCD_2016_Impervious_L48_20190405.img') #Based on 2016 data
+#cs_ref = arcpy.Describe(NLCD_imp).SpatialReference
 
 #Output variables
 outdir = os.path.join(rootdir, 'results/airdata')
@@ -62,10 +65,10 @@ sites_outbufunion = os.path.join(outdir, 'airsites_550bufunion.shp')
 
 AQIgdb = os.path.join(rootdir, 'results/airdata/AQI.gdb')
 #Create gdb for analysis
-if arcpy.Exists(AQIgdb):
-    print('Geodatabase already exists')
-else:
-    arcpy.CreateFileGDB_management(os.path.join(rootdir,'results/airdata'), 'AQI.gdb')
+# if arcpy.Exists(AQIgdb):
+#     print('Geodatabase already exists')
+# else:
+#     arcpy.CreateFileGDB_management(os.path.join(rootdir,'results/airdata'), 'AQI.gdb')
 
 airdatall = os.path.join(AQIdir, 'daily_SPEC_collate.csv')
 #airdat_uniquetab = os.path.join(AQIdir, 'daily_SPEC_unique.csv')
@@ -256,8 +259,8 @@ def extractCDFtoDF(indf, incdf, indir, varname, keepcols=None, datecol = None, l
         raise ValueError('{} already exists and overwrite==False, '
                          'either set overwrite==True or change outfile'.format(outfile))
 
-def narr_daynightstat(globpath, outdir, dnlist = ['day', 'night'], statlist = ['mean', 'min', 'max']):
-    for yeardat in glob.glob(globpath):
+def narr_daynightstat(indir, regexpattern, outdir, dnlist = ['day', 'night'], statlist = ['mean', 'min', 'max']):
+    for yeardat in getfilelist(indir, os.path.split(regexpattern)[1]):
         print('Processing {}...'.format(yeardat))
         outdat = os.path.join(outdir, '{}_'.format(os.path.splitext(os.path.split(yeardat)[1])[0]))
 
@@ -292,8 +295,8 @@ def narr_daynightstat(globpath, outdir, dnlist = ['day', 'night'], statlist = ['
         else:
             print('{} already exists, skipping...'.format(outdat))
 
-def narr_d36stat(globpath, outdir, dstat = None, multidstat = None):
-    xrlist = glob.glob(globpath)
+def narr_d36stat(indir, regexpattern, outdir, dstat = None, multidstat = None):
+    xrlist = getfilelist(indir, os.path.split(regexpattern)[1])
     if len(xrlist) > 0:
         for yeardat in xrlist:
             print('Processing {}...'.format(yeardat))
@@ -326,12 +329,10 @@ def narr_d36stat(globpath, outdir, dstat = None, multidstat = None):
                         xrd = xrd[varname].groupby('date').min(dim='time')
                     elif dstat == 'max':
                         xrd = xrd[varname].groupby('date').max(dim='time')
+                    elif dstat == 'diff':
+                        xrd = xrd[varname].diff(dim='date', n=1)
                     else:
                         raise ValueError('Daily statistics is not mean, min, or max')
-
-                extractCDFtoDF(indf, incdf, indir, varname, keepcols=None, datecol=None, level=None, outfile=None,
-                               overwrite=False)
-
 
                 if multidstat is not None:
                     if multidstat.values()[0] == 'mean':
@@ -351,7 +352,7 @@ def narr_d36stat(globpath, outdir, dstat = None, multidstat = None):
             else:
                 print('{} already exists, skipping...'.format(outdat))
     else:
-        raise ValueError('globpath does not correspond to any existing dataset')
+        raise ValueError('regexpattern does not correspond to any existing dataset')
 
 #-----------------------------------------------------------------------------------------------------------------------
 # SELECT SITES THAT RECORD CHEMICAL CONCENTRATIONS
@@ -573,30 +574,63 @@ for yeardat in glob.glob(os.path.join(NARRdir, 'air.sfc*.nc')):
         print('{} already exists, skipping...'.format(outdat))
 
 #Night/Day stats
-narr_daynightstat(globpath=os.path.join(NARRdir, 'shum.2m*.nc'), outdir=NARRoutdir, statlist=['mean', 'min'])
-narr_daynightstat(globpath=os.path.join(NARRoutdir, 'wspd.10m*.nc'), outdir=NARRoutdir, statlist=['mean', 'min'])
-narr_daynightstat(globpath=os.path.join(NARRdir, 'dswrf*.nc'), outdir=NARRoutdir, dnlist=['day'], statlist=['min'])
-narr_daynightstat(globpath=os.path.join(NARRdir, 'lftx4*.nc'), outdir=NARRoutdir, dnlist=['night'], statlist=['min'])
-narr_daynightstat(globpath=os.path.join(NARRoutdir, 'lts*.nc'), outdir=NARRoutdir, dnlist=['day'], statlist=['min'])
-narr_daynightstat(globpath=os.path.join(NARRoutdir, 'air.sfc*_9x9.nc'), outdir=NARRoutdir, dnlist=['night'], statlist=['max']) #'__xarray_dataarray_variable__'
+narr_daynightstat(indir=NARRdir, regexpattern='shum[.]2m.*[.]nc',
+                  outdir=NARRoutdir, statlist=['mean', 'min'])
+narr_daynightstat(indir=NARRdir, regexpattern='dswrf.*[.]nc',
+                  outdir=NARRoutdir, dnlist=['day'], statlist=['min'])
+narr_daynightstat(indir=NARRdir, regexpattern='lftx4.*[.]nc',
+                  outdir=NARRoutdir, dnlist=['night'], statlist=['min'])
+narr_daynightstat(indir=NARRdir, regexpattern='lts.*[.]nc',
+                  outdir=NARRoutdir, dnlist=['day'], statlist=['min'])
+narr_daynightstat(indir=NARRdir, regexpattern='crain[.]sfc.[1-9]{4}_9x9[.]nc',
+                  outdir=NARRoutdir, dnlist=['night'], statlist=['max'])
+
+#########TO RUN
+narr_daynightstat(indir=NARRoutdir, regexpattern='wspd[.]10m[.][1-9]{4}[.]nc',
+                  outdir=NARRoutdir, statlist=['mean', 'min', 'max'])
+narr_daynightstat(indir=NARRoutdir, regexpattern='vwnd[.]500[.][0-9]{4}[.]nc',
+                  outdir=NARRoutdir, dnlist=['day'], statlist=['max'])
+narr_daynightstat(indir=NARRoutdir, regexpattern='crain[.][0-9]{4}_9x9_[a-z]*[.]nc',
+                  outdir=NARRoutdir, dnlist=['night'], statlist=['max'])
 
 #Compute 1-, 3- and 6-day maxima, minima, and means
-narr_d36stat(globpath=os.path.join(NARRdir, 'hpbl*.nc'), outdir=NARRoutdir, dstat = 'mean') #to run
-
-
-narr_d36stat(globpath=os.path.join(NARRoutdir, 'dswrf*daymin*.nc'), outdir=NARRoutdir, multidstat = {6: 'max'}) #to run
-narr_d36stat(globpath=os.path.join(NARRoutdir, 'crain*9x9*.nc'), outdir=NARRoutdir, dstat = 'max', multidstat = {6: 'mean'}) #to run
-
-
-#globpath=os.path.join(NARRoutdir, 'wspd.10m*.nc')
-globpath=
-outdir=NARRoutdir
-dstat = 'max'
-multidstat = {3: 'mean'}
-
-
-#Compute 1-day delta variable
-
+narr_d36stat(indir=NARRdir, regexpattern='hpbl.*[.]nc',
+             outdir=NARRoutdir, dstat = 'mean')
+########## TO RUN #######################
+narr_d36stat(indir=NARRoutdir, regexpattern='crain[.][0-9]{4}_9x9_[a-z]*[.]nc',
+             outdir=NARRoutdir, dstat = 'max', multidstat = {6: 'mean'})
+narr_d36stat(indir=NARRoutdir, regexpattern='dswrf.*daymin.*[.]nc',
+             outdir=NARRoutdir, multidstat = {6: 'max'})
+narr_d36stat(indir=NARRoutdir, regexpattern='wspd[.]10m[.][1-9]{4}[.]nc',
+             outdir=NARRoutdir, dstat = 'max', multidstat = {3: 'min'})
+narr_d36stat(indir=NARRoutdir, regexpattern='wspd[.]10m[.][1-9]{4}[.]nc',
+             outdir=NARRoutdir, dstat = 'max', multidstat = {3: 'mean'})
+narr_d36stat(indir=NARRdir, regexpattern='lftx4.*[.]nc',
+             outdir=NARRoutdir, dstat = 'mean')
+narr_d36stat(indir=NARRdir, regexpattern='vwnd[.]500.*[.]nc',
+             outdir=NARRoutdir, dstat = 'min')
+narr_d36stat(indir=NARRdir, regexpattern='air[.]2m.*[.]nc',
+             outdir=NARRoutdir, dstat = 'max')
+narr_d36stat(indir=NARRoutdir, regexpattern='shum[.]2m[.][0-9]{4}_nightmin[.]nc',
+             outdir=NARRoutdir, multidstat = {6: 'mean'})
+narr_d36stat(indir=NARRoutdir, regexpattern='lftx4[.][0-9]{4}_nightmin[.]nc',
+             outdir=NARRoutdir, multidstat = {3: 'mean'})
+narr_d36stat(indir=NARRoutdir, regexpattern='rhum[.]2m[.][0-9]{4}[.]nc',
+             outdir=NARRoutdir, dstat = 'mean')
+narr_d36stat(indir=NARRoutdir, regexpattern='air[.]sfc.[1-9]{4}_9x9_nightmin[.]nc',
+             outdir=NARRoutdir,multidstat= {6: 'max'})
+narr_d36stat(indir=NARRoutdir, regexpattern='vwnd[.]500[.][0-9]{4}_daymax[.]nc',
+             outdir=NARRoutdir,multidstat= {6: 'max'})
+narr_d36stat(indir=NARRoutdir, regexpattern='shum[.]2m[.][0-9]{4}_daymean[.]nc',
+             outdir=NARRoutdir, dstat='diff')
+narr_d36stat(indir=NARRdir, regexpattern='pres[.]sfc[.][0-9]{4}[.]nc',
+             outdir=NARRoutdir, dstat='max')
+narr_d36stat(indir=NARRoutdir, regexpattern='rpi[.][0-9]{4}[.]nc',
+             outdir=NARRoutdir, dstat='max')
+narr_d36stat(indir=NARRoutdir, regexpattern='wspd[.]10m[.][1-9]{4}_daymax[.]nc',
+             outdir=NARRoutdir, multidstat = {3: 'max'})
+narr_d36stat(indir=NARRoutdir, regexpattern='hgt[.]850[.][1-9]{4}[.]nc',
+             outdir=NARRoutdir, dstat='max', multidstat = {6: 'max'})
 
 #-----------------------------------------------------------------------------------------------------------------------
 # CREATE POINT SHAPEFILE AND BUFFER
