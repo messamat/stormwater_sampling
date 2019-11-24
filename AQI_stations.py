@@ -1,4 +1,3 @@
-import arcpy
 import mendeleev
 import pandas as pd
 import itertools
@@ -25,11 +24,6 @@ pandas2ri.activate()
 
 #Custom functions
 from Download_gist import *
-
-#Set options
-#arcpy.CheckOutExtension("Spatial")
-#arcpy.env.overwriteOutput=True
-#arcpy.env.qualifiedFieldNames = False
 
 #Set up paths
 rootdir = 'D:/Mathis/ICSL/stormwater'
@@ -76,12 +70,6 @@ else:
 airdatall = os.path.join(AQIdir, 'daily_SPEC_collate.csv')
 #airdat_uniquetab = os.path.join(AQIdir, 'daily_SPEC_unique.csv')
 airdat_uniquedfexp_pickle =  os.path.join(rootdir, 'results/airdat_uniquedfexp.p')
-
-smokedir = os.path.join(rootdir, 'data/HMS_ARCHIVE_SMOKE')
-if not arcpy.Exists(smokedir):
-    print('Creating directory {}...'.format(smokedir))
-    os.mkdir(smokedir)
-smoke1419 = os.path.join(AQIgdb, 'smoke1419')
 
 #Functions
 def save_rdata_file(df, filename):
@@ -341,6 +329,10 @@ def narr_d36stat(globpath, outdir, dstat = None, multidstat = None):
                     else:
                         raise ValueError('Daily statistics is not mean, min, or max')
 
+                extractCDFtoDF(indf, incdf, indir, varname, keepcols=None, datecol=None, level=None, outfile=None,
+                               overwrite=False)
+
+
                 if multidstat is not None:
                     if multidstat.values()[0] == 'mean':
                         xrd = xrd.rolling(date=multidstat.keys()[0], center=False,
@@ -470,93 +462,6 @@ for var in varfolder_dic:
         downloadNARR(folder=varfolder_dic[var], variable=var, years=yearlist, outdir=NARRdir)
 
 #-----------------------------------------------------------------------------------------------------------------------
-# DOWNLOAD AND MERGE SMOKE DATA
-#-----------------------------------------------------------------------------------------------------------------------
-smokedates = pd.date_range(start='2014-01-01', end=date.today() - timedelta(days=1)).strftime('%Y%m%d')
-failedlist = []
-for d in smokedates:
-    try:
-        for ext in ['shp', 'dbf', 'shx']:
-            #Try downloading as .gzip
-            smokeurl = "https://satepsanone.nesdis.noaa.gov/pub/volcano/" \
-                       "FIRE/HMS_ARCHIVE/{0}/GIS/SMOKE/hms_smoke{1}.{2}".format(d[0:4], d, ext)
-            dlfile(url="{}.gz".format(smokeurl), outpath=smokedir
-
-            #If not gz file (stopped zipping data after summer 2018)
-            if not os.path.exists(os.path.join(smokedir, os.path.split(smokeurl)[1])):
-                response = requests.get(smokeurl, stream=True)
-                if response.status_code == 200:
-                    print "downloading " + smokeurl
-                    with open(os.path.join(smokedir, os.path.split(smokeurl)[1]), 'wb') as f:
-                        f.write(response.raw.read())
-    except Exception:
-        traceback.print_exc()
-        failedlist.append(smokeurl)
-        pass
-
-#Get rid of empty shapefiles
-#arcpy.env.workspace = smokedir; smokedatlist = arcpy.ListFeatureClasses() crashes with exit code
-for t in glob.glob(os.path.join(smokedir, '*.shp')):
-    if arcpy.Describe(t).shapeType == u'Null':
-        print('Delete {}, null feature class...'.format(t))
-        arcpy.Delete_management(t) #Obnoxious bugging with locks when deleting. Delete manually if needed.
-    else:
-        nameformat = os.path.splitext(os.path.split(t)[1])[0]
-        print('Add feature class name to fcname field for {}...'.format(nameformat))
-        arcpy.AddField_management(t, 'fcname', 'TEXT', field_length = 20)
-        with arcpy.da.UpdateCursor(t, ['fcname']) as cursor:
-            for row in cursor:
-                row[0] = nameformat
-                cursor.updateRow(row)
-
-# smokefdic = defaultdict(list)
-# for t in glob.glob(os.path.join(smokedir, '*shp')):
-#     ftypes_proj = [[f.name, f.type, f.length, f.precision, arcpy.Describe(t).SpatialReference.name] for f in arcpy.ListFields(t)]
-#     smokefdic[str(ftypes_proj)].append(t)
-
-
-#Merge all smoke polygons for each year separately, making sure that field lengths are homogeneous
-#Do not merge all years at the same time as default Merge crashes and fieldMappings.addTable(t) slows to a crawl
-#after a few hundreds feature classes. Append_management is equally slow
-for yr in range(2014, 2020):
-    outsmokeyr = os.path.join(AQIgdb, 'smoke{}'.format(yr))
-    fclist = glob.glob(os.path.join(smokedir, '*{}*.shp'.format(yr)))
-    if not arcpy.Exists(outsmokeyr):
-        fieldMappings = arcpy.FieldMappings()
-        print('Adding tables to field mapping...')
-        for fc in fclist:
-            fieldMappings.addTable(fc)
-        for fm in fieldMappings.fieldMappings:
-            if fm.outputField.name == 'Start':
-                if fm.outputField.length < 12:
-                    fmstart = fm
-                    outstartf = fmstart.outputField
-                    outstartf.length = 12
-                    fmstart.outputField = outstartf
-                    fieldMappings.removeFieldMap(fieldMappings.findFieldMapIndex('Start'))
-                    fieldMappings.addFieldMap(fmstart)
-
-            if fm.outputField.name == 'End':
-                if fm.outputField.length < 12:
-                    fmend = fm
-                    outendf = fmend.outputField
-                    outendf.length = 12
-                    fmend.outputField = outendf
-                    fieldMappings.removeFieldMap(fieldMappings.findFieldMapIndex('End'))
-                    fieldMappings.addFieldMap(fmend)
-        print('Merging all daily smoke datasets for year {}...'.format(yr))
-        arcpy.Merge_management(fclist, outsmokeyr, fieldMappings)
-    else:
-        print('{} already exists, skipping...'.format(outsmokeyr))
-        
-#Merge all years together
-arcpy.Merge_management([os.path.join(AQIgdb, 'smoke{}'.format(yr)) for yr in range(2014,2020)], smoke1419)
-
-#Project to Albers Equal Area (same as rest of the analysis)
-arcpy.DefineProjection_management(smoke1419, coor_system=arcpy.SpatialReference(4326))
-arcpy.Project_management(smoke1419, '{}_aea'.format(smoke1419), out_coor_system=cs_ref)
-
-#-----------------------------------------------------------------------------------------------------------------------
 # COMPUTE DERIVED VARIABLES
 # Does not include wind direction
 #-----------------------------------------------------------------------------------------------------------------------
@@ -669,7 +574,7 @@ for yeardat in glob.glob(os.path.join(NARRdir, 'air.sfc*.nc')):
 
 #Night/Day stats
 narr_daynightstat(globpath=os.path.join(NARRdir, 'shum.2m*.nc'), outdir=NARRoutdir, statlist=['mean', 'min'])
-narr_daynightstat(globpath=os.path.join(NARRdir, 'wspd.10m*.nc'), outdir=NARRoutdir, statlist=['mean', 'min'])
+narr_daynightstat(globpath=os.path.join(NARRoutdir, 'wspd.10m*.nc'), outdir=NARRoutdir, statlist=['mean', 'min'])
 narr_daynightstat(globpath=os.path.join(NARRdir, 'dswrf*.nc'), outdir=NARRoutdir, dnlist=['day'], statlist=['min'])
 narr_daynightstat(globpath=os.path.join(NARRdir, 'lftx4*.nc'), outdir=NARRoutdir, dnlist=['night'], statlist=['min'])
 narr_daynightstat(globpath=os.path.join(NARRoutdir, 'lts*.nc'), outdir=NARRoutdir, dnlist=['day'], statlist=['min'])
@@ -677,11 +582,9 @@ narr_daynightstat(globpath=os.path.join(NARRoutdir, 'air.sfc*_9x9.nc'), outdir=N
 
 #Compute 1-, 3- and 6-day maxima, minima, and means
 narr_d36stat(globpath=os.path.join(NARRdir, 'hpbl*.nc'), outdir=NARRoutdir, dstat = 'mean') #to run
+
+
 narr_d36stat(globpath=os.path.join(NARRoutdir, 'dswrf*daymin*.nc'), outdir=NARRoutdir, multidstat = {6: 'max'}) #to run
-
-
-
-
 narr_d36stat(globpath=os.path.join(NARRoutdir, 'crain*9x9*.nc'), outdir=NARRoutdir, dstat = 'max', multidstat = {6: 'mean'}) #to run
 
 
