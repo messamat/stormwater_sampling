@@ -143,26 +143,47 @@ def subsetNARRlevel(indir, pattern, sel_level, outnc):
                     pass
     #level_i = np.where(sourcef['level'] == level)[0][0]
 
-def extractCDFtoDF(indf, pattern, indir, varname, keepcols=None, datecol = None, level=None, outfile=None, overwrite=False):
+def extractCDFtoDF(indf, incdf, indir, varname, keepcols=None, datecol = None, level=None, outfile=None, overwrite=False):
+    """
+    Function to extract netcdf values at a set of points and dates for a list of netcdf files.
+    Two main inputs: a table of points with x, y, and a date column; a wildcard pattern to fetch netcdf files
+
+    :param indf: input table containing dataframe with x and y coordinates of points to which netcdf values should be extracted.
+                    can be .csv or .p file.
+    :param incdf: either xarray loaded in memory or glob (wildcard) pattern to use to fetch netcdf (does not include full path)
+    :param indir: full path of directory from which to fetch netcdf
+    :param varname: name of data variable to extract to points
+    :param keepcols: whether to drop (None) or keep other columns than the ones that were extracted from the netcdf
+    :param datecol: date column in the dataframe
+    :param level: if netcdf has multiple pressure levels, which level to extract
+    :param outfile: if outfile is None, overwrites indf, otherwise writes to .csv or .p
+    :param overwrite: False or True, whether to overwrite outfile
+    """
+
     if not (((outfile != None and os.path.exists(outfile)) or
              (outfile == None and os.path.exists(indf))) and
             overwrite == False):
-        pathpattern = os.path.join(indir, pattern)
-        cdflist = glob.glob(pathpattern)
-        print('Extracting {0}'.format(cdflist))
 
-        #Get netCDF data
-        try:
-            sourcef = xr.open_mfdataset(cdflist)
-        except Exception as e:
-            traceback.print_exc()
-            if isinstance(e, RuntimeError):
-                for fpath in cdflist:
-                    try:
-                        netCDF4.Dataset(fpath)
-                    except:
-                        print('Error stems from {}...'.format(fpath))
-                        pass
+        if isinstance(incdf, str):
+            pathpattern = os.path.join(indir, incdf)
+            cdflist = glob.glob(pathpattern)
+            print('Extracting {0}'.format(cdflist))
+
+            #Get netCDF data
+            try:
+                sourcef = xr.open_mfdataset(cdflist)
+            except Exception as e:
+                traceback.print_exc()
+                if isinstance(e, RuntimeError):
+                    for fpath in cdflist:
+                        try:
+                            netCDF4.Dataset(fpath)
+                        except:
+                            print('Error stems from {}...'.format(fpath))
+                            pass
+        else:
+            if isinstance(incdf, xr.DataArray) or isinstance(incdf, xr.Dataset):
+                sourcef = incdf
 
         #Print dimensions and their length
         print('Dimensions:')
@@ -584,7 +605,6 @@ for yr in range(2014, 2020):
                                         chunks={'x': 10, 'y': 10}),
                         xr.open_dataset(os.path.join(NARRdir, 'vwnd.10m.{}.nc'.format(yr)),
                                         chunks={'x': 10, 'y': 10}).vwnd])
-
         # Compute wspd
         if not os.path.exists(outwspd):
             wspd = pow(uvw.uwnd**2 + uvw.vwnd**2, 0.5)
@@ -798,7 +818,7 @@ cdfvardict = {
 for var in ['pres_sfc', 'shum_2m']: #cdfvardict.keys():
     try:
         print('Processing {}...'.format(var))
-        extractCDFtoDF(indf = airdat_uniquedfexp_pickle, pattern= cdfvardict[var][0], indir=NARRdir, varname=var,
+        extractCDFtoDF(indf = airdat_uniquedfexp_pickle, incdf= cdfvardict[var][0], indir=NARRdir, varname=var,
                        datecol = 'datetime_dupli', level=cdfvardict[var][1],
                        keepcols = ['UID', 'datetime_dupli', 'x', 'y', var], overwrite=True,
                        outfile= os.path.join(rootdir, 'results/daily_SPEC_{}.p'.format(var.replace('.', '_'))))
@@ -809,7 +829,7 @@ for var in ['pres_sfc', 'shum_2m']: #cdfvardict.keys():
 
 for var in ['vwnd_500', 'hgt_850']:
     print('Processing {}...'.format(var))
-    extractCDFtoDF(indf=airdat_uniquedfexp_pickle, pattern=cdfvardict[var][0], indir=NARRoutdir, varname=var,
+    extractCDFtoDF(indf=airdat_uniquedfexp_pickle, incdf=cdfvardict[var][0], indir=NARRoutdir, varname=var,
                    datecol='datetime_dupli', level=cdfvardict[var][1],
                    keepcols=['UID', 'datetime_dupli', 'x', 'y', var], overwrite=True,
                    outfile=os.path.join(rootdir, 'results/daily_SPEC_{}.p'.format(var.replace('.', '_'))))
