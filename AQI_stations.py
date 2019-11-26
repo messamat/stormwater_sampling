@@ -275,7 +275,13 @@ def narr_daynightstat(indir, regexpattern, outdir, dnlist = ['day', 'night'], st
             # Assign night vs day
             xrd.coords['daynight'] = ('time', xr.where(xrd.time.dt.hour.isin(range(0, 17)), 'night', 'day'))
 
+            #Drop pressure level coordinates
+            if 'level' in xrd.coords._names:
+                xrd = xrd.drop('level')
+
+            #For each of 'day' and 'night' in dnlist
             for per in dnlist:
+                #Output dataset name
                 outnc = '{0}{1}'.format(outdat, per)
 
                 #If xarray.DataArray was directly saved to netcdf before being converted manually to xarray.Dataset
@@ -309,12 +315,17 @@ def narr_d36stat(indir, regexpattern, outdir, dstat = None, multidstat = None):
                 datname = os.path.splitext(os.path.split(yeardat)[1])[0]
                 varname = datname.split('.')[0]
 
-                xrd = xr.open_dataset(yeardat, chunks={'x': 10, 'y': 10})
+                xrd = xr.open_dataset(yeardat)
                 if 'shifted_date' in xrd.coords.keys():
-                    xrd.coords['date'] = xrd['shifted_date']
-                    xrd = xrd.rename({'shifted_date':'time'})
+                    xrd = xrd.rename({'shifted_date':'date'})
+                    xrd = xrd.chunk({'date': 100, 'x': 40, 'y': 40})
                 else:
                     xrd.coords['date'] = ('time', xrd.time.dt.floor('d'))
+                    xrd = xrd.chunk({'time': 100, 'x': 40, 'y': 40})
+
+                #Drop pressure level coordinates
+                if 'level' in xrd.coords._names:
+                    xrd = xrd.drop('level')
 
                 #If xarray.DataArray was directly saved to netcdf before being converted manually to xarray.Dataset
                 datavars = xrd.data_vars.keys()
@@ -333,8 +344,12 @@ def narr_d36stat(indir, regexpattern, outdir, dstat = None, multidstat = None):
                         xrd = xrd[varname].diff(dim='date', n=1)
                     else:
                         raise ValueError('Daily statistics is not mean, min, or max')
+                    xrd = xrd.chunk({'date':100, 'x':100, 'y':100})
 
                 if multidstat is not None:
+                    if isinstance(xrd, xr.Dataset):
+                        xrd = xrd[varname]
+
                     if multidstat.values()[0] == 'mean':
                         xrd = xrd.rolling(date=multidstat.keys()[0], center=False,
                                                   min_periods=multidstat.keys()[0]).construct('window').mean('window')
@@ -348,7 +363,7 @@ def narr_d36stat(indir, regexpattern, outdir, dstat = None, multidstat = None):
                         raise ValueError('Multiday statistics is not mean, min, or max over 3 or 6 days')
 
                 print("Saving {} to netcdf. This might take a while...".format(outdat))
-                xrd.to_dataset(name=datname.split('.')[0]).chunk({'date':5, 'x':9, 'y':9}).to_netcdf(outdat)
+                xrd.to_dataset(name=datname.split('.')[0]).chunk({'date':100, 'x':100, 'y':100}).to_netcdf(outdat)
             else:
                 print('{} already exists, skipping...'.format(outdat))
     else:
@@ -582,44 +597,33 @@ narr_daynightstat(indir=NARRdir, regexpattern='lftx4.*[.]nc',
                   outdir=NARRoutdir, dnlist=['night'], statlist=['min'])
 narr_daynightstat(indir=NARRdir, regexpattern='lts.*[.]nc',
                   outdir=NARRoutdir, dnlist=['day'], statlist=['min'])
-narr_daynightstat(indir=NARRdir, regexpattern='crain[.]sfc.[1-9]{4}_9x9[.]nc',
+narr_daynightstat(indir=NARRdir, regexpattern='crain[.]sfc.[0-9]{4}_9x9[.]nc',
                   outdir=NARRoutdir, dnlist=['night'], statlist=['max'])
-
-#########TO RUN
-narr_daynightstat(indir=NARRoutdir, regexpattern='wspd[.]10m[.][1-9]{4}[.]nc',
+narr_daynightstat(indir=NARRoutdir, regexpattern='wspd[.]10m[.][0-9]{4}[.]nc',
                   outdir=NARRoutdir, statlist=['mean', 'min', 'max'])
-narr_daynightstat(indir=NARRoutdir, regexpattern='vwnd[.]500[.][0-9]{4}[.]nc',
-                  outdir=NARRoutdir, dnlist=['day'], statlist=['max'])
-narr_daynightstat(indir=NARRoutdir, regexpattern='crain[.][0-9]{4}_9x9_[a-z]*[.]nc',
+narr_daynightstat(indir=NARRoutdir, regexpattern='crain[.][0-9]{4}[_]9x9[.]nc',
                   outdir=NARRoutdir, dnlist=['night'], statlist=['max'])
+narr_daynightstat(indir=NARRoutdir, regexpattern='vwnd[.]500[.]nc',
+                  outdir=NARRoutdir, dnlist=['day'], statlist=['max'])
+narr_daynightstat(indir=NARRoutdir, regexpattern='air[.]sfc[.][0-9]{4}_9x9[.]nc',
+                  outdir=NARRoutdir, dnlist=['night'], statlist=['min'])
 
 #Compute 1-, 3- and 6-day maxima, minima, and means
-narr_d36stat(indir=NARRdir, regexpattern='hpbl.*[.]nc',
-             outdir=NARRoutdir, dstat = 'mean')
-########## TO RUN #######################
-narr_d36stat(indir=NARRoutdir, regexpattern='crain[.][0-9]{4}_9x9_[a-z]*[.]nc',
+narr_d36stat(indir=NARRoutdir, regexpattern='crain[.][0-9]{4}[_]9x9[.]nc',
              outdir=NARRoutdir, dstat = 'max', multidstat = {6: 'mean'})
 narr_d36stat(indir=NARRoutdir, regexpattern='dswrf.*daymin.*[.]nc',
              outdir=NARRoutdir, multidstat = {6: 'max'})
-narr_d36stat(indir=NARRoutdir, regexpattern='wspd[.]10m[.][1-9]{4}[.]nc',
-             outdir=NARRoutdir, dstat = 'max', multidstat = {3: 'min'})
-narr_d36stat(indir=NARRoutdir, regexpattern='wspd[.]10m[.][1-9]{4}[.]nc',
-             outdir=NARRoutdir, dstat = 'max', multidstat = {3: 'mean'})
-narr_d36stat(indir=NARRdir, regexpattern='lftx4.*[.]nc',
-             outdir=NARRoutdir, dstat = 'mean')
-narr_d36stat(indir=NARRdir, regexpattern='vwnd[.]500.*[.]nc',
-             outdir=NARRoutdir, dstat = 'min')
 narr_d36stat(indir=NARRdir, regexpattern='air[.]2m.*[.]nc',
              outdir=NARRoutdir, dstat = 'max')
 narr_d36stat(indir=NARRoutdir, regexpattern='shum[.]2m[.][0-9]{4}_nightmin[.]nc',
              outdir=NARRoutdir, multidstat = {6: 'mean'})
 narr_d36stat(indir=NARRoutdir, regexpattern='lftx4[.][0-9]{4}_nightmin[.]nc',
              outdir=NARRoutdir, multidstat = {3: 'mean'})
-narr_d36stat(indir=NARRoutdir, regexpattern='rhum[.]2m[.][0-9]{4}[.]nc',
+narr_d36stat(indir=NARRdir, regexpattern='rhum[.]2m[.][0-9]{4}[.]nc',
              outdir=NARRoutdir, dstat = 'mean')
-narr_d36stat(indir=NARRoutdir, regexpattern='air[.]sfc.[1-9]{4}_9x9_nightmin[.]nc',
+narr_d36stat(indir=NARRoutdir, regexpattern='air[.]sfc.[0-9]{4}_9x9_nightmin[.]nc',
              outdir=NARRoutdir,multidstat= {6: 'max'})
-narr_d36stat(indir=NARRoutdir, regexpattern='vwnd[.]500[.][0-9]{4}_daymax[.]nc',
+narr_d36stat(indir=NARRoutdir, regexpattern='vwnd[.]500_daymax[.]nc',
              outdir=NARRoutdir,multidstat= {6: 'max'})
 narr_d36stat(indir=NARRoutdir, regexpattern='shum[.]2m[.][0-9]{4}_daymean[.]nc',
              outdir=NARRoutdir, dstat='diff')
@@ -627,9 +631,20 @@ narr_d36stat(indir=NARRdir, regexpattern='pres[.]sfc[.][0-9]{4}[.]nc',
              outdir=NARRoutdir, dstat='max')
 narr_d36stat(indir=NARRoutdir, regexpattern='rpi[.][0-9]{4}[.]nc',
              outdir=NARRoutdir, dstat='max')
-narr_d36stat(indir=NARRoutdir, regexpattern='wspd[.]10m[.][1-9]{4}_daymax[.]nc',
+narr_d36stat(indir=NARRoutdir, regexpattern='wspd[.]10m[.][0-9]{4}_daymax[.]nc',
              outdir=NARRoutdir, multidstat = {3: 'max'})
-narr_d36stat(indir=NARRoutdir, regexpattern='hgt[.]850[.][1-9]{4}[.]nc',
+
+narr_d36stat(indir=NARRoutdir, regexpattern='wspd[.]10m[.][0-9]{4}[.]nc',
+             outdir=NARRoutdir, dstat = 'max', multidstat = {3: 'min'})
+narr_d36stat(indir=NARRoutdir, regexpattern='wspd[.]10m[.][0-9]{4}[.]nc',
+             outdir=NARRoutdir, dstat = 'max', multidstat = {3: 'mean'})
+narr_d36stat(indir=NARRdir, regexpattern='lftx4.*[.]nc',
+             outdir=NARRoutdir, dstat = 'mean')
+narr_d36stat(indir=NARRoutdir, regexpattern='vwnd[.]500[.]nc',
+             outdir=NARRoutdir, dstat = 'min')
+
+
+narr_d36stat(indir=NARRoutdir, regexpattern='hgt[.]850[.][0-9]{4}[.]nc',
              outdir=NARRoutdir, dstat='max', multidstat = {6: 'max'})
 
 #-----------------------------------------------------------------------------------------------------------------------
