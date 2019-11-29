@@ -10,7 +10,7 @@ import urllib
 import urllib2
 import io
 import glob
-from BeautifulSoup import BeautifulSoup
+from bs4 import BeautifulSoup
 import zipfile
 import numpy as np
 import traceback
@@ -750,15 +750,21 @@ customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=os.pat
               out_gdb=pollutgdbPS, out_var='PSAADT', divnum=100, keyw='log100*', verbose=True)
 arcpy.ClearEnvironment("snapRaster")
 
+#Bus transit
+arcpy.env.snapRaster = template_ras
+customheatmap(kernel_dir=os.path.join(rootdir, 'results/bing'), in_raster=PStransitras,
+              out_gdb = pollutgdbPS, out_var='PSbustransit', divnum=100, keyw='pow100_1*') #((log200)|(
+arcpy.ClearEnvironment("snapRaster")
+
 ########################################################################################################################
 # SUBSET HPMS TIGER AND GET AADT HEATMAP VALUES AROUND AQI STATIONS
 ########################################################################################################################
 #Intersect roads with buffers
 arcpy.Intersect_analysis([AQIsites_bufunion, hpmstigerproj], roadAQI, join_attributes='ALL')
 
-############################## TO RUN ##################################################################################
 ##########Run AQI_AADTheatmap.py##################
 
+######################################### TO RUN ######################################################################
 #For each station, extract aadt_filled
 heataadt_list = [os.path.join(dirpath, file)
               for (dirpath, dirnames, filenames) in os.walk(AQIdir)
@@ -796,8 +802,7 @@ with arcpy.da.UpdateCursor(AQIsites, ['OID@','SHAPE@XY', 'aadtlog100']) as curso
                     # outsamp = arcpy.sa.Sample(in_rasters=k, in_location_data=row[2], out_table=outab,
                     #                 resampling_type= 'BILINEAR')
 
-
-arcpy.Merge_management(tablist, output = AQIaadttab)
+#arcpy.Merge_management(tablist, output = AQIaadttab)
 
 ########################################################################################################################
 # PREPARE LAND USE DATA FOR AQI STATIONS
@@ -805,9 +810,9 @@ arcpy.Merge_management(tablist, output = AQIaadttab)
 #Compute focal stats within AQI buffers
 arcpy.env.mask = AQIsites_bufunion
 arcpy.env.snapRaster = NLCD_imp
-imp_mean = arcpy.sa.FocalStatistics(NLCD_imp, neighborhood = NbrCircle(3, "CELL"), statistics_type= 'MEAN')
+imp_mean = arcpy.sa.FocalStatistics(NLCD_imp, neighborhood = arcpy.sa.NbrCircle(3, "CELL"), statistics_type= 'MEAN')
 imp_mean.save(NLCD_imp_AQI_mean)
 
-#STILL TO DO - 20191119
+#Still to do
 #Extract smoothed imperviousness values at AQI stations
 arcpy.sa.ExtractMultiValuesToPoints(AQIsites, NLCD_imp_AQI_mean, bilinear_interpolate_values = 'NONE')
