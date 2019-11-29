@@ -1,7 +1,7 @@
 #Make sure to run this with 64bit Python. Even chunking won't help.
 
 import mendeleev
-#import arcpy
+import arcpy
 import pandas as pd
 import itertools
 import os
@@ -15,10 +15,11 @@ import netCDF4
 from datetime import date, timedelta
 import time
 import glob
+import traceback
+import dask
 import dateparser
 import xarray as xr
 import bottleneck # rolling window aggregations are faster and use less memory when bottleneck is installed http://xarray.pydata.org/en/stable/computation.html#rolling-window-operations
-import dask
 import cPickle as pickle
 import rpy2
 from rpy2 import robjects
@@ -31,13 +32,13 @@ from Download_gist import *
 #Set up paths
 rootdir = 'D:/Mathis/ICSL/stormwater'
 AQIdir = os.path.join(rootdir, 'data/EPA_AirData_201902')
+AQIgdb = os.path.join(rootdir, 'results/airdata/AQI.gdb')
 NARRdir = os.path.join(rootdir, 'data/NARR_201904')
 if not os.path.isdir(NARRdir):
     os.mkdir(NARRdir)
 NARRoutdir = os.path.join(rootdir, 'results/NARR')
 if not os.path.isdir(NARRoutdir):
     os.mkdir(NARRoutdir)
-
 
 #Import variables
 monitortab = os.path.join(AQIdir, 'aqs_monitors.csv')
@@ -51,7 +52,8 @@ if not os.path.exists(sitetab):
     dlfile('https://aqs.epa.gov/aqsweb/airdata/aqs_sites.zip', AQIdir)
 sites = pd.read_csv(sitetab)
 NLCD_imp = os.path.join(rootdir, 'data/NLCD_2016_Impervious_L48_20190405.img') #Based on 2016 data
-#cs_ref = arcpy.Describe(NLCD_imp).SpatialReference
+cs_ref = arcpy.Describe(NLCD_imp).SpatialReference
+smoke1419 = os.path.join(AQIgdb, 'smoke1419_aea')
 
 #Output variables
 outdir = os.path.join(rootdir, 'results/airdata')
@@ -62,17 +64,11 @@ sites_out_lambers = os.path.join(outdir, 'airsites_lambers.shp')
 sites_outbuf = os.path.join(outdir, 'airsites_550buf.shp')
 sites_outbufdis = os.path.join(outdir, 'airsites_550bufdis.shp')
 sites_outbufunion = os.path.join(outdir, 'airsites_550bufunion.shp')
-
-AQIgdb = os.path.join(rootdir, 'results/airdata/AQI.gdb')
-#Create gdb for analysis
-# if arcpy.Exists(AQIgdb):
-#     print('Geodatabase already exists')
-# else:
-#     arcpy.CreateFileGDB_management(os.path.join(rootdir,'results/airdata'), 'AQI.gdb')
+sites_smokejoin = os.path.join(outdir, 'airsites_smokejoin.shp')
 
 airdatall = os.path.join(AQIdir, 'daily_SPEC_collate.csv')
 #airdat_uniquetab = os.path.join(AQIdir, 'daily_SPEC_unique.csv')
-airdat_uniquedfexp_pickle =  os.path.join(rootdir, 'results/airdat_uniquedfexp.p')
+airdat_uniquedf_pickle =  os.path.join(rootdir, 'results/airdat_uniquedfproj.p')
 
 #Functions
 def save_rdata_file(df, filename):
@@ -115,149 +111,27 @@ def getclosest_ij_df(X, Y, XYpt):
         else:
             raise ValueError('Wrong number of columns in XYpt')
 
-def subsetNARRlevel(indir, pattern, sel_level, outnc):
-    pathpattern = os.path.join(indir, pattern)
-    cdflist = glob.glob(pathpattern)
-    print('Extracting {0}'.format(cdflist))
-
-    try:
-        sourcef = xr.open_mfdataset(cdflist, chunks={'time': 10})
-        sourcef.sel(level=sel_level).to_netcdf(outnc)
-    except Exception as e:
-        traceback.print_exc()
-        if isinstance(e, RuntimeError):
-            for fpath in cdflist:
-                try:
-                    netCDF4.Dataset(fpath)
-                except:
-                    print('Error stems from {}...'.format(fpath))
-                    pass
-    #level_i = np.where(sourcef['level'] == level)[0][0]
-
-def extractCDFtoDF(indf, incdf, indir, varname, keepcols=None, datecol = None, level=None, outfile=None, overwrite=False):
-    """
-    Function to extract netcdf values at a set of points and dates for a list of netcdf files.
-    Two main inputs: a table of points with x, y, and a date column; a wildcard pattern to fetch netcdf files
-
-    :param indf: input table containing dataframe with x and y coordinates of points to which netcdf values should be extracted.
-                    can be .csv or .p file.
-    :param incdf: either xarray loaded in memory or glob (wildcard) pattern to use to fetch netcdf (does not include full path)
-    :param indir: full path of directory from which to fetch netcdf
-    :param varname: name of data variable to extract to points
-    :param keepcols: whether to drop (None) or keep other columns than the ones that were extracted from the netcdf
-    :param datecol: date column in the dataframe
-    :param level: if netcdf has multiple pressure levels, which level to extract
-    :param outfile: if outfile is None, overwrites indf, otherwise writes to .csv or .p
-    :param overwrite: False or True, whether to overwrite outfile
-    """
-
-    if not (((outfile != None and os.path.exists(outfile)) or
-             (outfile == None and os.path.exists(indf))) and
-            overwrite == False):
-
-        if isinstance(incdf, str):
-            pathpattern = os.path.join(indir, incdf)
-            cdflist = glob.glob(pathpattern)
-            print('Extracting {0}'.format(cdflist))
-
-            #Get netCDF data
-            try:
-                sourcef = xr.open_mfdataset(cdflist)
-            except Exception as e:
-                traceback.print_exc()
-                if isinstance(e, RuntimeError):
-                    for fpath in cdflist:
-                        try:
-                            netCDF4.Dataset(fpath)
-                        except:
-                            print('Error stems from {}...'.format(fpath))
-                            pass
-        else:
-            if isinstance(incdf, xr.DataArray) or isinstance(incdf, xr.Dataset):
-                sourcef = incdf
-
-        #Print dimensions and their length
-        print('Dimensions:')
-        for dim in sourcef.dims:
-            print('{0}, length: {1}'.format(dim, sourcef.dims[dim]))
-
-        #If supplied path to csv, read csv as df
-        if isinstance(indf, str) and os.path.exists(indf):
-            if os.path.splitext(indf)[1] == '.csv':
-                df = pd.read_csv(indf)
-            elif os.path.splitext(indf)[1] == '.p':
-                df = pickle.load(open(indf, "rb"))
-            #Could use .feather too
-            # elif os.path.splitext(indf)[1] == '.feather':
-            #     df = pd.read_feather(indf)
-            else:
-                raise ValueError('Input df argument unknown format, only pd dfs, .csv and .p are supported')
-        elif isinstance(indf, pd.DataFrame):
-            df = indf
-        else:
-            raise ValueError('Input df argument neither csv nor dataframe ')
-
-        #Make sure that right columns are in df
-        if datecol is None:
-            datecol = 'date'
-        if any([c not in df.columns for c in ['x', 'y', datecol]]):
-            raise ValueError('Column missing in df; either x, y or date')
-
-        #Get index of the pixels closest to each point in df
-        print('Getting index of pixels closest to points in df...')
-
-        df_ij = df.merge(getclosest_ij_df(
-            X=np.tile(sourcef['x'].values, [sourcef['y'].shape[0], 1]),
-            Y=np.tile(np.transpose(np.asmatrix(sourcef['y'].values[::-1])), [1, sourcef['x'].shape[0]]),
-            XYpt=df[['x', 'y']]),
-            how='left', on=['x', 'y'])
-
-        #Convert dates in df to index
-        print('Converting dates to index...')
-        if df_ij[datecol].dtype.name != 'datetime64[ns]':
-            print('First converting {} to date datetime64 format'.format(datecol))
-            df_ij[datecol] = dateparser.parse(datecol)
-        df_ij = df_ij.merge(pd.DataFrame({'date_index': range(sourcef.dims['time']),
-                                          datecol: sourcef['time'].values}),
-                            on=datecol)
-
-        #Extract variables
-        print('Extracting variable...')
-        if level is not None:
-            if 'level' in sourcef.dims:
-                level_i = np.where(sourcef['level'] == level)[0][0]
-                df_ij[varname] = (sourcef[varname.split('_')[0]].isel(
-                    time=xr.DataArray(df_ij.date_index, dims='z'),
-                    x=xr.DataArray(df_ij.ix_min.astype(int), dims='z'),
-                    y=xr.DataArray(df_ij.iy_min.astype(int), dims='z'),
-                    level=level_i)).values
-            else:
-                raise ValueError("A 'level' argument was provided but netCDF does not have a level dimension")
-        else:
-            df_ij[varname] = (sourcef[varname.split('_')[0]].isel(
-                time=xr.DataArray(df_ij.date_index, dims='z'),
-                x=xr.DataArray(df_ij.ix_min.astype(int), dims='z'),
-                y=xr.DataArray(df_ij.iy_min.astype(int), dims='z'))).values
-
-        #Delete intermediate columns
-        print('Deleting indices columns')
-        df_ij.drop(['ix_min','iy_min','date_index'], axis=1, inplace=True)
-        if keepcols is not None:
-            df_ij.drop([c for c in df_ij.columns if c not in keepcols + list(varname)], axis=1, inplace=True)
-
-        #Write df out
-        if (isinstance(indf, str) and os.path.exists(indf)) or (outfile is not None):
-            print('Writing df out...')
-            outf = indf if outfile is None else outfile
-            if os.path.splitext(outf)[1] == '.csv':
-                df_ij.to_csv(outf, sep='\t', encoding = 'utf-8')
-            elif os.path.splitext(outf)[1] == '.p':
-                pickle.dump(df_ij, open(outf, "wb" ))
-            # elif os.path.splitext(outfile)[1] == '.feather':
-            #     df_ij.to_feather(outfile)
+def subsetNARRlevel(indir, pattern, sel_level, outnc, overwrite=False):
+    if os.path.exists(outnc) and overwrite == False:
+        print('{} already exists and overwrite=False, skipping...'.format(outnc))
     else:
-        raise ValueError('{} already exists and overwrite==False, '
-                         'either set overwrite==True or change outfile'.format(outfile))
+        pathpattern = os.path.join(indir, pattern)
+        cdflist = glob.glob(pathpattern)
+        print('Extracting {0}'.format(cdflist))
+
+        try:
+            sourcef = xr.open_mfdataset(cdflist, chunks={'time': 10})
+            sourcef.sel(level=sel_level).to_netcdf(outnc)
+        except Exception as e:
+            traceback.print_exc()
+            if isinstance(e, RuntimeError):
+                for fpath in cdflist:
+                    try:
+                        netCDF4.Dataset(fpath)
+                    except:
+                        print('Error stems from {}...'.format(fpath))
+                        pass
+        #level_i = np.where(sourcef['level'] == level)[0][0]
 
 def narr_daynightstat(indir, regexpattern, outdir, dnlist = ['day', 'night'], statlist = ['mean', 'min', 'max']):
     for yeardat in getfilelist(indir, os.path.split(regexpattern)[1]):
@@ -290,13 +164,13 @@ def narr_daynightstat(indir, regexpattern, outdir, dnlist = ['day', 'night'], st
                     varname = '__xarray_dataarray_variable__'
 
                 if 'mean' in statlist:
-                    xrd[varname].where(xrd.daynight == per, drop=True).\
+                    xrd[varname].where(xrd.daynight == per, drop=True). \
                         groupby('shifted_date').mean(dim='time').to_netcdf('{}mean.nc'.format(outnc))
                 if 'min' in statlist:
-                    xrd[varname].where(xrd.daynight == per, drop=True).\
+                    xrd[varname].where(xrd.daynight == per, drop=True). \
                         groupby('shifted_date').min(dim='time').to_netcdf('{}min.nc'.format(outnc))
                 if 'max' in statlist:
-                    xrd[varname].where(xrd.daynight == per, drop=True).\
+                    xrd[varname].where(xrd.daynight == per, drop=True). \
                         groupby('shifted_date').max(dim='time').to_netcdf('{}max.nc'.format(outnc))
         else:
             print('{} already exists, skipping...'.format(outdat))
@@ -352,13 +226,13 @@ def narr_d36stat(indir, regexpattern, outdir, dstat = None, multidstat = None):
 
                     if multidstat.values()[0] == 'mean':
                         xrd = xrd.rolling(date=multidstat.keys()[0], center=False,
-                                                  min_periods=multidstat.keys()[0]).construct('window').mean('window')
+                                          min_periods=multidstat.keys()[0]).construct('window').mean('window')
                     elif multidstat.values()[0] == 'min':
                         xrd = xrd.rolling(date=multidstat.keys()[0], center=False,
-                                                  min_periods=multidstat.keys()[0]).construct('window').min('window')
+                                          min_periods=multidstat.keys()[0]).construct('window').min('window')
                     elif multidstat.values()[0] == 'max':
                         xrd = xrd.rolling(date=multidstat.keys()[0], center=False,
-                                                  min_periods=multidstat.keys()[0]).construct('window').max('window')
+                                          min_periods=multidstat.keys()[0]).construct('window').max('window')
                     else:
                         raise ValueError('Multiday statistics is not mean, min, or max over 3 or 6 days')
 
@@ -368,6 +242,143 @@ def narr_d36stat(indir, regexpattern, outdir, dstat = None, multidstat = None):
                 print('{} already exists, skipping...'.format(outdat))
     else:
         raise ValueError('regexpattern does not correspond to any existing dataset')
+
+def extractCDFtoDF(indf, incdf, indir, varname, keepcols=None, datecol = None, level=None, outfile=None, overwrite=False):
+    """
+    Function to extract netcdf values at a set of points and dates for a list of netcdf files.
+    Two main inputs: a table of points with x, y, and a date column; a wildcard pattern to fetch netcdf files
+
+    :param indf: input table containing dataframe with x and y coordinates of points to which netcdf values should be extracted.
+                    can be .csv or .p file.
+    :param incdf: either xarray loaded in memory or regex pattern to use to fetch netcdf (does not include full path)
+    :param indir: full path of directory from which to fetch netcdf
+    :param varname: name of data variable to extract to points
+    :param keepcols: whether to drop (None) or keep other columns than the ones that were extracted from the netcdf
+    :param datecol: date column in the dataframe
+    :param level: if netcdf has multiple pressure levels, which level to extract
+    :param outfile: if outfile is None, overwrites indf, otherwise writes to .csv or .p
+    :param overwrite: False or True, whether to overwrite outfile
+    """
+
+    if not (((outfile != None and os.path.exists(outfile)) or
+             (outfile == None and os.path.exists(indf))) and
+            overwrite == False):
+
+
+        if isinstance(incdf, xr.DataArray) or isinstance(incdf, xr.Dataset):
+            sourcef = incdf
+        else:
+            if isinstance(incdf, str):
+                cdflist = getfilelist(indir, incdf)
+                print('Extracting {0}'.format(cdflist))
+            elif isinstance(incdf, list):
+                cdflist = incdf
+            else:
+                raise ValueError('incdf parameter is neither a DataArray, Dataset, regex pattern, or file list')
+
+            #Get netCDF data
+            try:
+                sourcef = xr.open_mfdataset(cdflist)
+            except Exception as e:
+                traceback.print_exc()
+                if isinstance(e, RuntimeError):
+                    for fpath in cdflist:
+                        try:
+                            netCDF4.Dataset(fpath)
+                        except:
+                            print('Error stems from {}...'.format(fpath))
+                            pass
+
+        if 'shifted_date' in sourcef.coords.keys():
+            sourcef = sourcef.rename({'shifted_date': 'date'})
+
+        # If xarray.DataArray was directly saved to netcdf before being converted manually to xarray.Dataset
+        datavars = sourcef.data_vars.keys()
+        if len(datavars) == 1 and datavars[0] == '__xarray_dataarray_variable__':
+            sourcef = sourcef.rename({'__xarray_dataarray_variable__': varname})
+        else:
+            sourcef = sourcef.rename({varname.split('.')[0]: varname})
+
+        #Print dimensions and their length
+        # print('Dimensions:')
+        # for dim in sourcef.dims:
+        #     print('{0}, length: {1}'.format(dim, sourcef.dims[dim]))
+
+        #If supplied path to csv, read csv as df
+        if isinstance(indf, str) and os.path.exists(indf):
+            if os.path.splitext(indf)[1] == '.csv':
+                df = pd.read_csv(indf)
+            elif os.path.splitext(indf)[1] == '.p':
+                df = pickle.load(open(indf, "rb"))
+            #Could use .feather too
+            # elif os.path.splitext(indf)[1] == '.feather':
+            #     df = pd.read_feather(indf)
+            else:
+                raise ValueError('Input df argument unknown format, only pd dfs, .csv and .p are supported')
+        elif isinstance(indf, pd.DataFrame):
+            df = indf
+        else:
+            raise ValueError('Input df argument neither csv nor pickle or dataframe ')
+
+        #Make sure that right columns are in df
+        if datecol is None:
+            datecol = 'date'
+        if any([c not in df.columns for c in ['x', 'y', datecol]]):
+            raise ValueError('Column missing in df; either x, y or date')
+
+        #Get index of the pixels closest to each point in df
+        #print('Getting index of pixels closest to points in df...')
+
+        df_ij = df.merge(getclosest_ij_df(
+            X=np.tile(sourcef['x'].values, [sourcef['y'].shape[0], 1]),
+            Y=np.tile(np.transpose(np.asmatrix(sourcef['y'].values[::-1])), [1, sourcef['x'].shape[0]]),
+            XYpt=df[['x', 'y']]),
+            how='left', on=['x', 'y'])
+
+        #Convert dates in df to index
+        #print('Converting dates to index...')
+        if df_ij[datecol].dtype.name != 'datetime64[ns]':
+            print('First converting {} to date datetime64 format'.format(datecol))
+            df_ij[datecol] = pd.to_datetime(df_ij[datecol], format='%Y-%m-%d')
+        df_ij = df_ij.merge(pd.DataFrame({'date_index': range(sourcef.dims['date']),
+                                          datecol: sourcef['date'].values}),
+                            on=datecol)
+
+        #Extract variables
+        print('Extracting variable...')
+        if level is not None:
+            if 'level' in sourcef.dims:
+                level_i = np.where(sourcef['level'] == level)[0][0]
+                df_ij[varname] = (sourcef[varname].isel(
+                    time=xr.DataArray(df_ij.date_index, dims='z'),
+                    x=xr.DataArray(df_ij.ix_min.astype(int), dims='z'),
+                    y=xr.DataArray(df_ij.iy_min.astype(int), dims='z'),
+                    level=level_i)).values
+            else:
+                raise ValueError("A 'level' argument was provided but netCDF does not have a level dimension")
+        else:
+            df_ij[varname] = (sourcef[varname].isel(
+                date=xr.DataArray(df_ij.date_index, dims='z'),
+                x=xr.DataArray(df_ij.ix_min.astype(int), dims='z'),
+                y=xr.DataArray(df_ij.iy_min.astype(int), dims='z'))).values
+
+        #Delete intermediate columns
+        #print('Deleting indices columns')
+        df_ij.drop(['ix_min','iy_min','date_index'], axis=1, inplace=True)
+        if keepcols is not None:
+            df_ij.drop([c for c in df_ij.columns if c not in keepcols + list(varname)], axis=1, inplace=True)
+
+        #Write df out
+        print('Writing df out...')
+        if os.path.splitext(outfile)[1] == '.csv':
+            df_ij.to_csv(outfile, sep='\t', encoding = 'utf-8')
+        elif os.path.splitext(outfile)[1] == '.p':
+            pickle.dump(df_ij, open(outfile, "wb" ))
+        # elif os.path.splitext(outfile)[1] == '.feather':
+        #     df_ij.to_feather(outfile)
+    else:
+        raise ValueError('{} already exists and overwrite==False, '
+                         'either set overwrite==True or change outfile'.format(outfile))
 
 #-----------------------------------------------------------------------------------------------------------------------
 # SELECT SITES THAT RECORD CHEMICAL CONCENTRATIONS
@@ -396,10 +407,17 @@ fips_excluded = [us.states.lookup(abr).fips for abr in ['PR','AK','HI','VI','UM'
 #Compute Unique Site Identifier and select sites that record chemical concentrations
 monitors_chem['UID'] = monitors_chem['State Code'] + \
                        monitors_chem['County Code'].astype(str) + \
-                       monitors_chem['Site Number'].astype(str)
+                       monitors_chem['Site Number'].astype(str) + \
+                       monitors_chem["Latitude"].astype(str).str[-3:] + \
+                       monitors_chem["Longitude"].astype(str).str[-3:]
+
+
 sites['UID'] = sites['State Code'].astype(str) + \
                sites['County Code'].astype(str) + \
-               sites['Site Number'].astype(str)
+               sites['Site Number'].astype(str) + \
+               sites["Latitude"].astype(str).str[-3:] + \
+               sites["Longitude"].astype(str).str[-3:]
+
 sites_chem = sites[(sites['UID'].isin(pd.unique(monitors_chem['UID']))) &
                    ~(sites['State Code'].isin(fips_excluded))]
 len(sites_chem)
@@ -443,7 +461,7 @@ covar_pm25 = [var.split('_') for var in
 covar_pm25_base = list(set([var[0] for var in covar_pm25]))
 
 #Modify list to only keep raw variables and match NARR abbreviations
-covar_sub = [var for var in covar_pm25_base if var not in ['lts', 'fire', 'uwnddir.10m', 'vwnddir.10m', 'wspd.10m', 'rpi']] +\
+covar_sub = [var for var in covar_pm25_base if var not in ['lts', 'fire', 'uwnddir.10m', 'vwnddir.10m', 'wspd.10m', 'rpi']] + \
             ['uwnd.10m', 'vwnd.10m'] + ['pottmp.sfc', 'air.700'] #to compute lts
 
 #Assign variable to either monolevel or pressure direction in the ftp server (ftp://ftp.cdc.noaa.gov/Datasets/NARR/Dailies/)
@@ -453,17 +471,6 @@ for var in covar_sub:
         varfolder_dic[var] = 'pressure'
     else:
         varfolder_dic[var] = 'monolevel'
-
-#Get proj4 from NARR netcdfs
-templatef = xr.open_mfdataset(glob.glob(os.path.join(NARRdir, varfolder_dic.keys()[0]+'*')))
-crsatt = templatef.variables['Lambert_Conformal'].attrs
-lcc_proj4 = ("+proj=lcc +lat_1={0} +lat_2={1} +lat_0={2} +lon_0={3} +x_0={4} +y_0={5} +units=m +no_def".
-             format(crsatt['standard_parallel'][0],
-                    crsatt['standard_parallel'][1],
-                    crsatt['latitude_of_projection_origin'],
-                    crsatt['longitude_of_central_meridian'],
-                    crsatt['false_easting'],
-                    crsatt['false_northing']))
 
 #Download all NARR data from 2010 to 2018 for each variable
 yearlist = range(2014, 2020)
@@ -512,10 +519,10 @@ for yeardat in glob.glob(os.path.join(NARRdir, 'pottmp.sfc.*.nc')):
         print('{} already exists, skipping...'.format(outdat))
 
 #wspd (windspeed at 10 m) and rpi (recirculation potential index) = 1 - L/S
-    #the vector sum magnitude (L) and scalar sum (S) of surface wind speeds over the previous 24 h (Allwine and Whitemane 1994)
-    #https://www.sciencedirect.com/science/article/abs/pii/1352231094900485
-    #L = sqrt((3*sumforpast24h(uwind))^2+(3*sumforpast24h(vwind))^2)
-    #S = 3*sumoverpast24h(uwind^2+vwind^2)^1/2
+#the vector sum magnitude (L) and scalar sum (S) of surface wind speeds over the previous 24 h (Allwine and Whitemane 1994)
+#https://www.sciencedirect.com/science/article/abs/pii/1352231094900485
+#L = sqrt((3*sumforpast24h(uwind))^2+(3*sumforpast24h(vwind))^2)
+#S = 3*sumoverpast24h(uwind^2+vwind^2)^1/2
 for yr in range(2014, 2020):
     print('Processing {}...'.format(yr))
     outwspd = os.path.join(NARRoutdir, 'wspd.10m.{}.nc'.format(yr))
@@ -539,7 +546,7 @@ for yr in range(2014, 2020):
         if not os.path.exists(outrpi):
             #Used .construct('window').sum('window') rather than simply .sum() due to MemoryError issues (see https://github.com/pydata/xarray/issues/3165)
             rpi = (pow((3*uvw.uwnd.rolling(time=8, center=False, min_periods=8).construct('window').sum('window')**2) +
-                    (3*uvw.vwnd.rolling(time=8, center=False, min_periods=8).construct('window').sum('window')**2), 0.5)/
+                       (3*uvw.vwnd.rolling(time=8, center=False, min_periods=8).construct('window').sum('window')**2), 0.5)/
                    3*pow(uvw.uwnd**2 + uvw.vwnd**2, 0.5).rolling(time=8, center=False, min_periods=8).construct('window').sum('window'))
 
             # Can easily lead to memory error. Switching to single-threaded scheduler did not help
@@ -642,9 +649,7 @@ narr_d36stat(indir=NARRdir, regexpattern='lftx4.*[.]nc',
              outdir=NARRoutdir, dstat = 'mean')
 narr_d36stat(indir=NARRoutdir, regexpattern='vwnd[.]500[.]nc',
              outdir=NARRoutdir, dstat = 'min')
-
-
-narr_d36stat(indir=NARRoutdir, regexpattern='hgt[.]850[.][0-9]{4}[.]nc',
+narr_d36stat(indir=NARRoutdir, regexpattern='hgt[.]850[.]nc',
              outdir=NARRoutdir, dstat='max', multidstat = {6: 'max'})
 
 #-----------------------------------------------------------------------------------------------------------------------
@@ -656,6 +661,17 @@ sites_chem.groupby('Datum')['UID'].nunique() #Check what datums data are in
 sites_wgs84 = pdtogpd_datum(sites_chem, 'WGS84')
 sites_nad27 = pdtogpd_datum(sites_chem, 'NAD27')
 sites_nad83 = pdtogpd_datum(sites_chem, 'NAD83')
+
+#Get proj4 from NARR netcdfs
+templatef = xr.open_mfdataset(glob.glob(os.path.join(NARRdir, varfolder_dic.keys()[0]+'*')))
+crsatt = templatef.variables['Lambert_Conformal'].attrs
+lcc_proj4 = ("+proj=lcc +lat_1={0} +lat_2={1} +lat_0={2} +lon_0={3} +x_0={4} +y_0={5} +units=m +no_def".
+             format(crsatt['standard_parallel'][0],
+                    crsatt['standard_parallel'][1],
+                    crsatt['latitude_of_projection_origin'],
+                    crsatt['longitude_of_central_meridian'],
+                    crsatt['false_easting'],
+                    crsatt['false_northing']))
 
 #Project them all to same projection as meteorological data for extraction (Lambert Comformal Conic)
 sites_gpd_lambers = pd.concat([sites_wgs84.to_crs(crs=lcc_proj4), sites_nad27.to_crs(crs=lcc_proj4), sites_nad83.to_crs(crs=lcc_proj4)])
@@ -712,24 +728,35 @@ for file in spec25_list + spec10_list:
 #Collate all data
 if not os.path.exists(airdatall):
     mergedel(AQIdir, 'daily_.*SPEC.*[0-9]{4,6}[.]csv$', airdatall, verbose=True)
-airdat_df = pd.read_csv(airdatall)
+airdat_df = pd.read_csv(airdatall, dtype={'State Code':np.object, 'County Code':np.object, 'Site Num':np.object,
+                                          'Parameter Code': np.object, 'Latitude': np.float64, 'Longitude':np.float64,
+                                          'Datum':np.object, 'Parameter Name':np.object, 'Sample Duration':np.object,
+                                          'Pollutant Standard': np.object, 'Date Local': np.object, 'Units of Measure': np.object,
+                                          'Event Type': np.object, 'Observation Count': int, 'Observation Percent':np.float16,
+                                          'Arithmetic Mean': np.float64, '1st Max Value': np.float32, '1st Max Hour': np.float32,
+                                          'AQI': np.object, 'Method Code': np.object, 'Method Name': np.object,
+                                          'Local Site Name': np.object, 'Address': np.object, 'State Name': np.object,
+                                          'County Name': np.object, 'City Name': np.object, 'CBSA Name': np.object,
+                                          'Date of Last Change': np.object},
+                        parse_dates=['Date Local', 'Date of Last Change'])
+
+print('Compute unique ID for each monitoring site...')
+airdat_df['UID'] = airdat_df['State Code'].astype(str).str.zfill(2) + \
+                   airdat_df['County Code'].astype(str) + \
+                   airdat_df['Site Num'].astype(str) + \
+                   airdat_df["Latitude"].astype(str).str[-3:] + \
+                   airdat_df["Longitude"].astype(str).str[-3:]
 
 #-----------------------------------------------------------------------------------------------------------------------
 # FORMAT AQI DATA
 #-----------------------------------------------------------------------------------------------------------------------
-if not os.path.exists(airdat_uniquedfexp_pickle):
-    print('Compute unique ID for each monitoring site...')
-    airdat_df['UID'] = airdat_df['State Code'].astype(str).str.zfill(2) + \
-                       airdat_df['County Code'].astype(str) + \
-                       airdat_df['Site Num'].astype(str)
-
-    airdat_df[airdat_df['UID']=='01101102']
+if not os.path.exists(airdat_uniquedf_pickle):
     print('Compute df of unique UID-time records to extract meteorological variables with...')
     subcols = ['UID', 'Latitude', 'Longitude', 'Date Local']
     airdat_unique = pd.unique(airdat_df[subcols[0]].str.cat(airdat_df[subcols[1:]].astype(str), sep='._.')) #Concatenate columns
 
     airdat_uniquedf = pd.DataFrame(
-        [i.split('._.') for i in list(airdat_unique)],
+        [str(i).split('._.') for i in list(airdat_unique)],
         columns = subcols) #Resplit and format to df
     #Faster than airdat_unique.str.split("._.", n = 4, expand = True) ?
     airdat_uniquedf['date'] = airdat_uniquedf['Date Local']
@@ -737,87 +764,62 @@ if not os.path.exists(airdat_uniquedfexp_pickle):
     # Get projected x and y coordinates for each site
     airdat_uniquedfproj = airdat_uniquedf.merge(pd.DataFrame(sites_gpd_lambers.drop(columns='geometry')), on='UID', how='inner')
 
-    # Expand df to extract 3-hourly meteorological averages
-    airdat_uniquedfexp = airdat_uniquedfproj.reindex(airdat_uniquedfproj.index.repeat(8))
-    airdat_uniquedfexp['datetime_dupli'] = pd.to_datetime(airdat_uniquedfexp['date'], format='%Y-%m-%d') + \
-                                           pd.to_timedelta(airdat_uniquedfexp.groupby(level=0).cumcount() * 3, unit='h')
+    # # Expand df to extract 3-hourly meteorological averages
+    # airdat_uniquedfexp = airdat_uniquedfproj.reindex(airdat_uniquedfproj.index.repeat(8))
+    # airdat_uniquedfexp['datetime_dupli'] = pd.to_datetime(airdat_uniquedfexp['date'], format='%Y-%m-%d') + \
+    #                                        pd.to_timedelta(airdat_uniquedfexp.groupby(level=0).cumcount() * 3, unit='h')
 
-    pickle.dump(airdat_uniquedfexp, open(airdat_uniquedfexp_pickle, "wb"))
+    pickle.dump(airdat_uniquedfproj, open(airdat_uniquedf_pickle, "wb"))
 else:
-    airdat_uniquedfexp = pickle.load(open(airdat_uniquedfexp_pickle, "rb"))
+    airdat_uniquedfproj = pickle.load(open(airdat_uniquedf_pickle, "rb"))
 
 #-----------------------------------------------------------------------------------------------------------------------
 # EXTRACT ALL METEOROLOGICAL VARIABLES FOR EACH STATION-DATE COMBINATION
 #-----------------------------------------------------------------------------------------------------------------------
-#Dictionary of variables to extract (do not rely on level argument for hgt and vwnd as netcdfs are too big and saturate memory_
-cdfvardict = {
-    'air_2m': ['air.2m*.nc', None],
-    'air_sfc': ['air.sfc*.nc', None],
-    'crain': ['crain.*.nc', None],
-    'dswrf': ['dswrf.*.nc', None],
-    'hgt_850': ['hgt.850*.nc', None],
-    'hpbl': ['hpbl.*.nc', None],
-    'lftx4': ['lftx4.*.nc', None],
-    'pres_sfc': ['pres.sfc.*.nc', None],
-    'rhum_2m': ['rhum.2m.*.nc', None],
-    'shum_2m': ['shum.2m.*.nc', None],
-    'uwnd_10m': ['uwnd.10m.*.nc', None],
-    'vwnd_10m': ['vwnd.10m.*.nc', None],
-    'vwnd_500': ['vwnd.500*.nc', None]
-}
+#Make dictionnary of netcdf files to extract to air quality stations
+vardict = defaultdict(list)
+for netc in getfilelist(NARRoutdir, re.compile('.*(mean|max|min|diff).*[.]nc')):
+    vardict[re.sub(r'[0-9]{4}_', '', os.path.splitext(os.path.split(netc)[1])[0])].append(netc)
 
 #Iterate through variables to extract
-for var in ['pres_sfc', 'shum_2m']: #cdfvardict.keys():
+for var in vardict:
     try:
         print('Processing {}...'.format(var))
-        extractCDFtoDF(indf = airdat_uniquedfexp_pickle, incdf= cdfvardict[var][0], indir=NARRdir, varname=var,
-                       datecol = 'datetime_dupli', level=cdfvardict[var][1],
-                       keepcols = ['UID', 'datetime_dupli', 'x', 'y', var], overwrite=True,
+        extractCDFtoDF(indf = airdat_uniquedfproj, incdf= vardict[var], indir=NARRdir, varname=var,
+                       datecol = 'date', keepcols = ['UID', 'date', 'x', 'y', var], overwrite=False,
                        outfile= os.path.join(rootdir, 'results/daily_SPEC_{}.p'.format(var.replace('.', '_'))))
     except Exception:
         traceback.print_exc()
         print('Skipping...')
         pass
 
-for var in ['vwnd_500', 'hgt_850']:
-    print('Processing {}...'.format(var))
-    extractCDFtoDF(indf=airdat_uniquedfexp_pickle, incdf=cdfvardict[var][0], indir=NARRoutdir, varname=var,
-                   datecol='datetime_dupli', level=cdfvardict[var][1],
-                   keepcols=['UID', 'datetime_dupli', 'x', 'y', var], overwrite=True,
-                   outfile=os.path.join(rootdir, 'results/daily_SPEC_{}.p'.format(var.replace('.', '_'))))
-
 #Collate all air data
-airdat_climmerge = pd.read_csv(airdatall)
-airdat_climmerge['UID'] = airdat_climmerge ['State Code'].astype(str).str.zfill(2) + \
-                   airdat_climmerge ['County Code'].astype(str) + \
-                   airdat_climmerge ['Site Num'].astype(str)
+try:
+    airdat_climmerge = airdat_df
+except:
+    airdat_climmerge = pd.read_csv(airdatall)
+    print('Compute unique ID for each monitoring site...')
+    airdat_climmerge['UID'] = airdat_climmerge['State Code'].astype(str).str.zfill(2) + \
+                              airdat_climmerge['County Code'].astype(str) + \
+                              airdat_climmerge['Site Num'].astype(str) + \
+                              airdat_climmerge["Latitude"].astype(str).str[-3:] + \
+                              airdat_climmerge["Longitude"].astype(str).str[-3:]
 
-for var in cdfvardict.keys():
-    print(var)
-    with open(os.path.join(rootdir, 'results/daily_SPEC_{}.p'.format(var.replace('.', '_'))), "rb") as input_file:
-         indf = pickle.load(input_file)
-    indf['Date Local'] = indf['datetime_dupli'].dt.date.astype(str)
-    indf_stat = indf.groupby(['UID', 'Date Local'], as_index=False).agg({var: ["max", "mean"]})
-    indf_stat.columns = ["".join(x) for x in indf_stat.columns.ravel()]
-    airdat_climmerge = airdat_climmerge.merge(indf_stat, on=['UID', 'Date Local'])
-
-    pickle.dump(airdat_climmerge, open(os.path.join(rootdir, "airdat_scratch"), "wb"))
+plist = [os.path.join(rootdir, 'results/daily_SPEC_{}.p'.format(var.replace('.', '_'))) for var in vardict]
+with open(plist[0], "rb") as input_file:
+    narrjoin = pickle.load(input_file)
+for pname in plist:
+    if pname != plist[0]:
+        print(pname)
+        with open(pname, "rb") as input_file:
+            indf = pickle.load(input_file)
+        narrjoin = narrjoin.merge(indf.drop(columns=['x', 'y']), on=['UID', 'date'], how='outer')
+        print(narrjoin.shape)
+narrjoin['Date Local'] = narrjoin['date']
+airdat_climmerge = airdat_climmerge.merge(narrjoin, on=['UID', 'Date Local'])
 
 #Write out data to table (should use feather but some module conflicts and don't want to deal with it)
 airdat_climmerge.to_csv(os.path.join(rootdir, 'results/airdat_NARRjoin.csv'))
 
-
-
-##############################################################################################################
-####################################################################################################################################
-# EXTRA STUFF
-air2m = netCDF4.Dataset(os.path.join(NARRdir, 'air.2m.2016.nc'))
-# air2m = netCDF4.Dataset(os.path.join(NARRdir, 'air.2m.2016.nc'))
-# air2m.close()
-# #Check variables
-for a in air2m.variables:
-    print(a)
-    varobj = air2m.variables[a]
-    print(varobj)
-
-air2m.variables['Lambert_Conformal']
+#Extract smoke data
+arcpy.Intersect_analysis([sites_out, smoke1419], sites_smokejoin, join_attributes='ALL')
