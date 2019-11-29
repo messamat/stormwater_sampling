@@ -764,7 +764,6 @@ arcpy.Intersect_analysis([AQIsites_bufunion, hpmstigerproj], roadAQI, join_attri
 
 ##########Run AQI_AADTheatmap.py##################
 
-######################################### TO RUN ######################################################################
 #For each station, extract aadt_filled
 heataadt_list = [os.path.join(dirpath, file)
               for (dirpath, dirnames, filenames) in os.walk(AQIdir)
@@ -813,6 +812,5 @@ arcpy.env.snapRaster = NLCD_imp
 imp_mean = arcpy.sa.FocalStatistics(NLCD_imp, neighborhood = arcpy.sa.NbrCircle(3, "CELL"), statistics_type= 'MEAN')
 imp_mean.save(NLCD_imp_AQI_mean)
 
-#Still to do
 #Extract smoothed imperviousness values at AQI stations
 arcpy.sa.ExtractMultiValuesToPoints(AQIsites, NLCD_imp_AQI_mean, bilinear_interpolate_values = 'NONE')
