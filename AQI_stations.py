@@ -568,19 +568,15 @@ for yr in range(2014, 2020):
 for yeardat in glob.glob(os.path.join(NARRdir, 'crain.*.nc')):
     print('Processing {}...'.format(yeardat))
     outdat = os.path.join(NARRoutdir, '{}_9x9.nc'.format(os.path.splitext(os.path.split(yeardat)[1])[0]))
-    if not os.path.exists(outdat):
-        with xr.open_dataset(yeardat, chunks={'time':292, 'x':10}) as crainf:
-            crainrollx = crainf['crain'].rolling(y=9, center=True).construct('window').mean('window')
-            crainrollxdt = crainrollx.to_dataset(name='crain')
-            crainrollxdt.to_netcdf(outdat)
-        with xr.open_dataset(outdat, chunks={'time': 292, 'y': 10}) as crainf:
-            crainroll = crainf['crain'].rolling(x=9, center=True).construct('window').mean('window')
-            crainrolldt = crainroll.to_dataset(name='crain')
-            crainrolldt.to_netcdf(outdat)
-        del crainroll
-        del crainrolldt
-    else:
-        print('{} already exists, skipping...'.format(outdat))
+    #if not os.path.exists(outdat):
+    with xr.open_dataset(yeardat, chunks={'time':292, 'x':10}) as crainf:
+        crainroll = crainf['crain'].rolling(y=9, center=True).mean().rolling(x=9, center=True).mean()
+        crainrolldt = crainroll.to_dataset(name='crain')
+        crainrolldt.to_netcdf(outdat)
+    del crainroll
+    del crainrolldt
+    # else:
+    #     print('{} already exists, skipping...'.format(outdat))
 
 #air.sfc 9x9
 for yeardat in glob.glob(os.path.join(NARRdir, 'air.sfc*.nc')):
@@ -640,7 +636,6 @@ narr_d36stat(indir=NARRoutdir, regexpattern='rpi[.][0-9]{4}[.]nc',
              outdir=NARRoutdir, dstat='max')
 narr_d36stat(indir=NARRoutdir, regexpattern='wspd[.]10m[.][0-9]{4}_daymax[.]nc',
              outdir=NARRoutdir, multidstat = {3: 'max'})
-
 narr_d36stat(indir=NARRoutdir, regexpattern='wspd[.]10m[.][0-9]{4}[.]nc',
              outdir=NARRoutdir, dstat = 'max', multidstat = {3: 'min'})
 narr_d36stat(indir=NARRoutdir, regexpattern='wspd[.]10m[.][0-9]{4}[.]nc',
