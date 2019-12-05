@@ -64,7 +64,9 @@ sites_out_lambers = os.path.join(outdir, 'airsites_lambers.shp')
 sites_outbuf = os.path.join(outdir, 'airsites_550buf.shp')
 sites_outbufdis = os.path.join(outdir, 'airsites_550bufdis.shp')
 sites_outbufunion = os.path.join(outdir, 'airsites_550bufunion.shp')
-sites_smokejoin = os.path.join(outdir, 'airsites_smokejoin.shp')
+sites_smokejoin = os.path.join(AQIgdb, 'sitessmokejoin')
+sites_smokejointab = os.path.join(AQIgdb, 'sitessmokejoin_tab')
+sites_smokejoin_subpd = os.path.join(AQIdir, 'sitessmokejoin_tabsub.p')
 
 airdatall = os.path.join(AQIdir, 'daily_SPEC_collate.csv')
 #airdat_uniquetab = os.path.join(AQIdir, 'daily_SPEC_unique.csv')
@@ -723,17 +725,15 @@ for file in spec25_list + spec10_list:
 #Collate all data
 if not os.path.exists(airdatall):
     mergedel(AQIdir, 'daily_.*SPEC.*[0-9]{4,6}[.]csv$', airdatall, verbose=True)
-airdat_df = pd.read_csv(airdatall, dtype={'State Code':np.object, 'County Code':np.object, 'Site Num':np.object,
-                                          'Parameter Code': np.object, 'Latitude': np.float64, 'Longitude':np.float64,
-                                          'Datum':np.object, 'Parameter Name':np.object, 'Sample Duration':np.object,
-                                          'Pollutant Standard': np.object, 'Date Local': np.object, 'Units of Measure': np.object,
-                                          'Event Type': np.object, 'Observation Count': int, 'Observation Percent':np.float16,
-                                          'Arithmetic Mean': np.float64, '1st Max Value': np.float32, '1st Max Hour': np.float32,
-                                          'AQI': np.object, 'Method Code': np.object, 'Method Name': np.object,
-                                          'Local Site Name': np.object, 'Address': np.object, 'State Name': np.object,
-                                          'County Name': np.object, 'City Name': np.object, 'CBSA Name': np.object,
-                                          'Date of Last Change': np.object},
-                        parse_dates=['Date Local', 'Date of Last Change'])
+airdat_df_dtypes = {'State Code':np.object, 'County Code':np.object, 'Site Num':np.object, 'Parameter Code': np.object,
+                    'Latitude': np.float64, 'Longitude':np.float64, 'Datum':np.object, 'Parameter Name':np.object,
+                    'Sample Duration':np.object, 'Pollutant Standard': np.object, 'Date Local': np.object,
+                    'Units of Measure': np.object, 'Event Type': np.object, 'Observation Count': int,
+                    'Observation Percent':np.float16, 'Arithmetic Mean': np.float64, '1st Max Value': np.float32,
+                    '1st Max Hour': np.float32, 'AQI': np.object, 'Method Code': np.object, 'Method Name': np.object,
+                    'Local Site Name': np.object, 'Address': np.object, 'State Name': np.object,'County Name': np.object,
+                    'City Name': np.object, 'CBSA Name': np.object, 'Date of Last Change': np.object}
+airdat_df = pd.read_csv(airdatall, dtype= airdat_df_dtypes, parse_dates=['Date Local', 'Date of Last Change'])
 
 print('Compute unique ID for each monitoring site...')
 airdat_df['UID'] = airdat_df['State Code'].astype(str).str.zfill(2) + \
@@ -792,7 +792,7 @@ for var in vardict:
 try:
     airdat_climmerge = airdat_df
 except:
-    airdat_climmerge = pd.read_csv(airdatall)
+    airdat_climmerge = pd.read_csv(airdatall, dtype= airdat_df_dtypes, parse_dates=['Date Local', 'Date of Last Change'])
     print('Compute unique ID for each monitoring site...')
     airdat_climmerge['UID'] = airdat_climmerge['State Code'].astype(str).str.zfill(2) + \
                               airdat_climmerge['County Code'].astype(str) + \
@@ -813,8 +813,101 @@ for pname in plist:
 narrjoin['Date Local'] = narrjoin['date']
 airdat_climmerge = airdat_climmerge.merge(narrjoin, on=['UID', 'Date Local'])
 
-#Write out data to table (should use feather but some module conflicts and don't want to deal with it)
-airdat_climmerge.to_csv(os.path.join(rootdir, 'results/airdat_NARRjoin.csv'))
+#-----------------------------------------------------------------------------------------------------------------------
+# EXTRACT SMOKE DATA FOR EACH STATION-DATE COMBINATION
+#-----------------------------------------------------------------------------------------------------------------------
+#Intersect smoke polygons with sites
+if not arcpy.Exists(sites_smokejointab):
+    arcpy.Intersect_analysis([sites_out, smoke1419], sites_smokejoin, join_attributes='ALL')
+    arcpy.CopyRows_management(sites_smokejoin, sites_smokejointab)
+else:
+    print('{} already exists. Skipping...'.format(sites_smokejointab))
 
-#Extract smoke data
-arcpy.Intersect_analysis([sites_out, smoke1419], sites_smokejoin, join_attributes='ALL')
+#Subset table columns to ease manipulation
+if not os.path.exists(sites_smokejoin_subpd):
+    sites_smokejoin_gpd = gpd.read_file(AQIgdb, driver='FileGDB', layer=os.path.split(sites_smokejoin)[1])
+    sites_smokejoin_sub = sites_smokejoin_gpd[['UID', 'x', 'y', 'ID', 'Density', 'fcname', 'Start', 'End']]
+    pickle.dump(sites_smokejoin_sub, open(sites_smokejoin_subpd, "wb"))
+else:
+    sites_smokejoin_sub = pickle.load(open(sites_smokejoin_subpd, "rb"))
+
+#Format dates
+#Establish regex
+def smokenamedate_regx(x):
+    return re.search(re.compile("(?<=hms_smoke)[0-9]+"), x).group()
+
+def smokehour_regx(x):
+    searchout = re.search(re.compile("(?<=\s)[0-9]{4}$"), x)
+    if not searchout is None:
+        return int(searchout.group())
+    else:
+        return None
+
+def smokedate_regx(x):
+    searchout = re.search(re.compile("^[0-9]{7}(?=\s)"), x)
+    if not searchout is None:
+        return searchout.group()
+    else:
+        return None
+
+sites_smokejoin_sub['fcdate'] = pd.to_datetime(sites_smokejoin_sub['fcname'].apply(smokenamedate_regx),
+                                               infer_datetime_format=False)
+sites_smokejoin_sub['starthour'] = sites_smokejoin_sub['Start'].apply(smokehour_regx)
+sites_smokejoin_sub['startdate'] = pd.to_datetime(sites_smokejoin_sub['Start'].apply(smokedate_regx),
+                                                  format='%Y%j')
+sites_smokejoin_sub['endhour'] = sites_smokejoin_sub['End'].apply(smokehour_regx)
+sites_smokejoin_sub['enddate'] = pd.to_datetime(sites_smokejoin_sub['End'].apply(smokedate_regx),
+                                                format='%Y%j')
+
+#Check records whose smoke startdate is different than the date of the layer
+check = sites_smokejoin_sub[~((sites_smokejoin_sub['fcdate'] == sites_smokejoin_sub['startdate']) |
+                                 (pd.isnull(sites_smokejoin_sub['startdate'])))]
+#Check those whose startdate is after the date of the layer
+check[(check.fcdate - check.startdate) < np.timedelta64(-0,'D')][['fcdate', 'startdate', 'enddate', 'Start', 'End']]
+
+#Check records whose smoke enddate is different than the date of the layer
+check = sites_smokejoin_sub[~((sites_smokejoin_sub['fcdate'] == sites_smokejoin_sub['enddate']) |
+                                 (pd.isnull(sites_smokejoin_sub['enddate'])))]
+#Check those whose endate is before the date of the layer
+check[(check.enddate - check.fcdate) < np.timedelta64(-0,'D')][['fcdate', 'startdate', 'enddate', 'Start', 'End']]
+
+#It seems that these records were assigned to the smoke layer for the wrong day. Only affects <3% of records. Correct them.
+sites_smokejoin_sub.loc[((sites_smokejoin_sub.fcdate - sites_smokejoin_sub.startdate) < np.timedelta64(-0,'D')) |
+                        ((sites_smokejoin_sub.enddate - sites_smokejoin_sub.fcdate) < np.timedelta64(-0,'D')),
+                        'fcdate'] = \
+    sites_smokejoin_sub.loc[((sites_smokejoin_sub.fcdate - sites_smokejoin_sub.startdate) < np.timedelta64(-0,'D')) |
+                            ((sites_smokejoin_sub.enddate - sites_smokejoin_sub.fcdate) < np.timedelta64(-0,'D')),
+                            'startdate']
+
+#For each day, assign proportion of day when smoke was present at that location based on start and end datetime
+# smoke density*proportion of hours that day with smoke
+prestart = sites_smokejoin_sub.startdate < sites_smokejoin_sub.fcdate
+sites_smokejoin_sub.loc[prestart, 'smokeindex_1d'] = \
+    sites_smokejoin_sub.loc[prestart,'Density'].apply(lambda x: re.sub('\s', '', x)).astype(float)* \
+    (sites_smokejoin_sub.loc[prestart,'endhour']- 0)/2400.0
+
+postend = sites_smokejoin_sub.enddate > sites_smokejoin_sub.fcdate
+sites_smokejoin_sub.loc[postend, 'smokeindex_1d'] = \
+    sites_smokejoin_sub.loc[postend, 'Density'].apply(lambda x: re.sub('\s', '', x)).astype(float)*\
+    (2400-sites_smokejoin_sub.loc[postend,'starthour'])/2400.0
+
+inday = (sites_smokejoin_sub.enddate == sites_smokejoin_sub.fcdate) &\
+        (sites_smokejoin_sub.startdate == sites_smokejoin_sub.fcdate)
+sites_smokejoin_sub.loc[inday, 'smokeindex_1d'] = \
+    sites_smokejoin_sub.loc[inday, 'Density'].apply(lambda x: re.sub('\s', '', x)).astype(float)*\
+    (sites_smokejoin_sub.loc[inday, 'endhour'] - sites_smokejoin_sub.loc[inday, 'starthour'])/2400.0
+
+#Then sum when multiple smoke plumes intersect a point in a day
+sites_smoke_stat = sites_smokejoin_sub.groupby(['UID', 'fcdate']).smokeindex_1d.sum().reset_index()
+
+#Get sum of index in the past 3 and 6 days (including current day)
+roll3d = sites_smoke_stat.groupby('UID').rolling('3d', on='fcdate').smokeindex_1d.sum().rename('smokeindex_3d')
+roll6d = sites_smoke_stat.groupby('UID').rolling('6d', on='fcdate').smokeindex_1d.sum().rename('smokeindex_6d')
+sites_smoke_stat = sites_smoke_stat.set_index(['UID', 'fcdate']).\
+    join(roll3d, on=['UID', 'fcdate']).join(roll6d, on=['UID', 'fcdate']).reset_index().rename(columns={'fcdate':'date'})
+
+#Merge air quality station + NARR data with smoke variables
+airdat_climmerge = pd.merge(airdat_climmerge, sites_smoke_stat, on=['UID', 'date'], how='left')
+
+#Write out data to table (should use feather but some module conflicts and don't want to deal with it)
+airdat_climmerge.to_csv(os.path.join(rootdir, 'results/airdat_NARRjoin.csv')
