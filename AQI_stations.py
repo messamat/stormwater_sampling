@@ -22,6 +22,7 @@ import xarray as xr
 import bottleneck # rolling window aggregations are faster and use less memory when bottleneck is installed http://xarray.pydata.org/en/stable/computation.html#rolling-window-operations
 import cPickle as pickle
 import rpy2
+import feather
 from rpy2 import robjects
 from rpy2.robjects import pandas2ri
 pandas2ri.activate()
@@ -401,27 +402,27 @@ monitors_chem = monitors.loc[(monitors['Parameter Name'].str.contains(elems_rege
 
 #Pad monitors' codes with 0s to match sites' codes
 pd.unique(monitors_chem['County Code'])
-monitors_chem['State Code'] = monitors_chem['State Code'].astype(str).str.pad(2, 'left', '0')
+monitors_chem.loc[:, 'State Code'] = monitors_chem.loc[:, 'State Code'].astype(str).str.pad(2, 'left', '0')
 
 #Remove sites outside of the conterminous US (to not exceed 50,000 tile limit)
 fips_excluded = [us.states.lookup(abr).fips for abr in ['PR','AK','HI','VI','UM', 'MP', 'GU'] if us.states.lookup(abr)]
 
 #Compute Unique Site Identifier and select sites that record chemical concentrations
-monitors_chem['UID'] = monitors_chem['State Code'] + \
-                       monitors_chem['County Code'].astype(str) + \
-                       monitors_chem['Site Number'].astype(str) + \
-                       monitors_chem["Latitude"].astype(str).str[-3:] + \
-                       monitors_chem["Longitude"].astype(str).str[-3:]
+monitors_chem.loc[:, 'UID'] = monitors_chem.loc[:, 'State Code'] + \
+                              monitors_chem.loc[:, 'County Code'].astype(str) + \
+                              monitors_chem.loc[:, 'Site Number'].astype(str) + \
+                              monitors_chem.loc[:, "Latitude"].astype(str).str[-3:] + \
+                              monitors_chem.loc[:, "Longitude"].astype(str).str[-3:]
 
 
-sites['UID'] = sites['State Code'].astype(str) + \
-               sites['County Code'].astype(str) + \
-               sites['Site Number'].astype(str) + \
-               sites["Latitude"].astype(str).str[-3:] + \
-               sites["Longitude"].astype(str).str[-3:]
+sites.loc[:, 'UID'] = sites.loc[:, 'State Code'].astype(str) + \
+                      sites.loc[:, 'County Code'].astype(str) + \
+                      sites.loc[:, 'Site Number'].astype(str) + \
+                      sites.loc[:, "Latitude"].astype(str).str[-3:] + \
+                      sites.loc[:, "Longitude"].astype(str).str[-3:]
 
-sites_chem = sites[(sites['UID'].isin(pd.unique(monitors_chem['UID']))) &
-                   ~(sites['State Code'].isin(fips_excluded))]
+sites_chem = sites[(sites.loc[:, 'UID'].isin(pd.unique(monitors_chem.loc[:, 'UID']))) &
+                   ~(sites.loc[:, 'State Code'].isin(fips_excluded))]
 len(sites_chem)
 len(pd.unique(sites_chem['UID'])) #Most sites are unique
 
@@ -570,15 +571,15 @@ for yr in range(2014, 2020):
 for yeardat in glob.glob(os.path.join(NARRdir, 'crain.*.nc')):
     print('Processing {}...'.format(yeardat))
     outdat = os.path.join(NARRoutdir, '{}_9x9.nc'.format(os.path.splitext(os.path.split(yeardat)[1])[0]))
-    #if not os.path.exists(outdat):
-    with xr.open_dataset(yeardat, chunks={'time':292, 'x':10}) as crainf:
-        crainroll = crainf['crain'].rolling(y=9, center=True).mean().rolling(x=9, center=True).mean()
-        crainrolldt = crainroll.to_dataset(name='crain')
-        crainrolldt.to_netcdf(outdat)
-    del crainroll
-    del crainrolldt
-    # else:
-    #     print('{} already exists, skipping...'.format(outdat))
+    if not os.path.exists(outdat):
+        with xr.open_dataset(yeardat, chunks={'time':292}) as crainf:
+            crainroll = crainf['crain'].rolling(y=9, center=True).mean().rolling(x=9, center=True).mean()
+            crainrolldt = crainroll.to_dataset(name='crain')
+            crainrolldt.to_netcdf(outdat)
+        del crainroll
+        del crainrolldt
+    else:
+        print('{} already exists, skipping...'.format(outdat))
 
 #air.sfc 9x9
 for yeardat in glob.glob(os.path.join(NARRdir, 'air.sfc*.nc')):
@@ -602,8 +603,6 @@ narr_daynightstat(indir=NARRdir, regexpattern='lftx4.*[.]nc',
                   outdir=NARRoutdir, dnlist=['night'], statlist=['min'])
 narr_daynightstat(indir=NARRdir, regexpattern='lts.*[.]nc',
                   outdir=NARRoutdir, dnlist=['day'], statlist=['min'])
-narr_daynightstat(indir=NARRdir, regexpattern='crain[.]sfc.[0-9]{4}_9x9[.]nc',
-                  outdir=NARRoutdir, dnlist=['night'], statlist=['max'])
 narr_daynightstat(indir=NARRoutdir, regexpattern='wspd[.]10m[.][0-9]{4}[.]nc',
                   outdir=NARRoutdir, statlist=['mean', 'min', 'max'])
 narr_daynightstat(indir=NARRoutdir, regexpattern='crain[.][0-9]{4}[_]9x9[.]nc',
@@ -705,8 +704,14 @@ sites_bufunion = gpd.GeoDataFrame([polygon for polygon in sites_bufgpd.unary_uni
     rename(columns={0:'geometry'}).set_geometry('geometry')
 
 #Output to shapefile
-sites_gpd.to_file(sites_out, driver = 'ESRI Shapefile')
-sites_gpd_lambers.to_file(sites_out_lambers, driver = 'ESRI Shapefile')
+if not os.path.exists(sites_out):
+    sites_gpd.to_file(sites_out, driver = 'ESRI Shapefile')
+else:
+    sites_gpd = gpd.read_file(sites_out)
+if not os.path.exists(sites_out_lambers):
+    sites_gpd_lambers.to_file(sites_out_lambers, driver = 'ESRI Shapefile')
+else:
+    sites_gpd_lambers = gpd.read_file(sites_out_lambers)
 sites_bufgpd.to_file(sites_outbuf, driver = 'ESRI Shapefile')
 sites_bufdis.to_file(sites_outbufdis, driver = 'ESRI Shapefile')
 sites_bufunion.to_file(sites_outbufunion, driver = 'ESRI Shapefile')
@@ -861,13 +866,13 @@ sites_smokejoin_sub['enddate'] = pd.to_datetime(sites_smokejoin_sub['End'].apply
 
 #Check records whose smoke startdate is different than the date of the layer
 check = sites_smokejoin_sub[~((sites_smokejoin_sub['fcdate'] == sites_smokejoin_sub['startdate']) |
-                                 (pd.isnull(sites_smokejoin_sub['startdate'])))]
+                              (pd.isnull(sites_smokejoin_sub['startdate'])))]
 #Check those whose startdate is after the date of the layer
 check[(check.fcdate - check.startdate) < np.timedelta64(-0,'D')][['fcdate', 'startdate', 'enddate', 'Start', 'End']]
 
 #Check records whose smoke enddate is different than the date of the layer
 check = sites_smokejoin_sub[~((sites_smokejoin_sub['fcdate'] == sites_smokejoin_sub['enddate']) |
-                                 (pd.isnull(sites_smokejoin_sub['enddate'])))]
+                              (pd.isnull(sites_smokejoin_sub['enddate'])))]
 #Check those whose endate is before the date of the layer
 check[(check.enddate - check.fcdate) < np.timedelta64(-0,'D')][['fcdate', 'startdate', 'enddate', 'Start', 'End']]
 
@@ -881,6 +886,8 @@ sites_smokejoin_sub.loc[((sites_smokejoin_sub.fcdate - sites_smokejoin_sub.start
 
 #For each day, assign proportion of day when smoke was present at that location based on start and end datetime
 # smoke density*proportion of hours that day with smoke
+# Density indices are 5, 16, and 27 which are the center point of the following smoke categories:
+# 0-10 micrograms/m3 for light , 10-21 micrograms/m3 for medium, 21-32 micrograms/m3 for thick
 prestart = sites_smokejoin_sub.startdate < sites_smokejoin_sub.fcdate
 sites_smokejoin_sub.loc[prestart, 'smokeindex_1d'] = \
     sites_smokejoin_sub.loc[prestart,'Density'].apply(lambda x: re.sub('\s', '', x)).astype(float)* \
@@ -888,13 +895,13 @@ sites_smokejoin_sub.loc[prestart, 'smokeindex_1d'] = \
 
 postend = sites_smokejoin_sub.enddate > sites_smokejoin_sub.fcdate
 sites_smokejoin_sub.loc[postend, 'smokeindex_1d'] = \
-    sites_smokejoin_sub.loc[postend, 'Density'].apply(lambda x: re.sub('\s', '', x)).astype(float)*\
+    sites_smokejoin_sub.loc[postend, 'Density'].apply(lambda x: re.sub('\s', '', x)).astype(float)* \
     (2400-sites_smokejoin_sub.loc[postend,'starthour'])/2400.0
 
-inday = (sites_smokejoin_sub.enddate == sites_smokejoin_sub.fcdate) &\
+inday = (sites_smokejoin_sub.enddate == sites_smokejoin_sub.fcdate) & \
         (sites_smokejoin_sub.startdate == sites_smokejoin_sub.fcdate)
 sites_smokejoin_sub.loc[inday, 'smokeindex_1d'] = \
-    sites_smokejoin_sub.loc[inday, 'Density'].apply(lambda x: re.sub('\s', '', x)).astype(float)*\
+    sites_smokejoin_sub.loc[inday, 'Density'].apply(lambda x: re.sub('\s', '', x)).astype(float)* \
     (sites_smokejoin_sub.loc[inday, 'endhour'] - sites_smokejoin_sub.loc[inday, 'starthour'])/2400.0
 
 #Then sum when multiple smoke plumes intersect a point in a day
@@ -903,11 +910,11 @@ sites_smoke_stat = sites_smokejoin_sub.groupby(['UID', 'fcdate']).smokeindex_1d.
 #Get sum of index in the past 3 and 6 days (including current day)
 roll3d = sites_smoke_stat.groupby('UID').rolling('3d', on='fcdate').smokeindex_1d.sum().rename('smokeindex_3d')
 roll6d = sites_smoke_stat.groupby('UID').rolling('6d', on='fcdate').smokeindex_1d.sum().rename('smokeindex_6d')
-sites_smoke_stat = sites_smoke_stat.set_index(['UID', 'fcdate']).\
+sites_smoke_stat = sites_smoke_stat.set_index(['UID', 'fcdate']). \
     join(roll3d, on=['UID', 'fcdate']).join(roll6d, on=['UID', 'fcdate']).reset_index().rename(columns={'fcdate':'date'})
 
 #Merge air quality station + NARR data with smoke variables
 airdat_climmerge = pd.merge(airdat_climmerge, sites_smoke_stat, on=['UID', 'date'], how='left')
 
 #Write out data to table (should use feather but some module conflicts and don't want to deal with it)
-airdat_climmerge.to_csv(os.path.join(rootdir, 'results/airdat_NARRjoin.csv')
+airdat_climmerge.to_csv(os.path.join(rootdir, 'results/airdat_NARRjoin.csv'))
