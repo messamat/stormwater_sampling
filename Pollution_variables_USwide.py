@@ -137,7 +137,7 @@ if not arcpy.Exists(usdotgdb):
     arcpy.CreateFileGDB_management(resdir, out_name = 'usdot')
 
 XRFsites_aea = os.path.join(pollutgdb, 'XRFsites_aea')
-XRFsites_aeaattri = os.path.join(pollutgdb, 'XRFsites_projallattri')
+XRFsites_aeasel = os.path.join(pollutgdb, "XRFsites_aeasel")
 
 def Iter_ListRaster(workspaces, wildcard):
     "Build list of all rasters in list of workspaces that correspond to a wildcard"
@@ -725,6 +725,9 @@ heatlist = Iter_ListRaster([pollutgdb, transitgdb], 'heat*') + glob.glob(os.path
 
 #Project
 arcpy.Project_management(XRFsites, XRFsites_aea, cs_ref)
+treeselSQL = "Include IN ( 'Y' , ' ' ) AND (NOT Date = date '2019-04-21 00:00:00') AND (NOT SiteIDPair IN ('52A', '7A'))"
+arcpy.MakeFeatureLayer_management(XRFsites_aea, 'sitesaea_lyr', where_clause = treeselSQL)
+arcpy.CopyFeatures_management('sitesaea_lyr', XRFsites_aeasel)
 
 #Extract values
 arcpy.env.qualifiedFieldNames = False
