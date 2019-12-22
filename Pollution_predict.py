@@ -31,6 +31,10 @@ Seattlegdb = os.path.join(rootdir, 'results/Seattle_sampling.gdb')
 pollutgdb = os.path.join(rootdir,'results/pollution_variables.gdb')
 pollutPSgdb = os.path.join(rootdir, 'results/pollution_variables_PS.gdb')
 NLCDreclass = os.path.join(rootdir, 'results/LU.gdb/NLCD_reclass_final')
+pollutfieldclean_cast = os.path.join(rootdir, 'results/data_modeling/pollutfieldclean_cast.dbf')
+template_ras = os.path.join(rootdir, 'results/bing/heatbing1902log300proj.tif')
+restemplate = arcpy.GetRasterProperties_management(template_ras, 'CELLSIZEX')
+PSdissolve = os.path.join(rootdir, 'results/PSwtshd_dissolve.shp')
 
 #Create new gdb for predictions
 predgdb = os.path.join(rootdir,'results/PSpredictions.gdb')
@@ -40,6 +44,7 @@ else:
     arcpy.CreateFileGDB_management(os.path.join(rootdir,'results'), 'PSpredictions.gdb')
 
 #Define variables
+PSdissolveras = os.path.join(predgdb, 'PSwtshd_dissolve')
 heatsubAADTlog100 = os.path.join(pollutPSgdb, 'heatPSAADTlog100')
 heatbustransitpow100_1 = os.path.join(pollutPSgdb, 'heatPSbustransitpow100_1')
 heatbustransitlog200 = os.path.join(pollutPSgdb, 'heatPSbustransitlog200')
@@ -49,6 +54,15 @@ predzn36index = os.path.join(predgdb, 'predzn36index')
 predcu19 = os.path.join(predgdb, 'predcu19')
 predcu19index = os.path.join(predgdb, 'predcu19index')
 predpi30 = os.path.join(predgdb, 'predpi30')
+
+#Create template raster for predictions
+arcpy.env.snapRaster = template_ras
+if not arcpy.Exists(PSdissolveras):
+    arcpy.CalculateField_management(PSdissolve, field='Id', expression = 1, expression_type='PYTHON')
+    arcpy.PolygonToRaster_conversion(PSdissolve, 'Id', PSdissolveras, cellsize = restemplate)
+
+#Define extent
+arcpy.env.extent = PSdissolveras
 
 #Load models
 mods = ro.r['readRDS'](os.path.join(moddir,'fieldXRFmodels.rds'))
@@ -83,7 +97,7 @@ predznindex = 100*(Float(Raster(predzn36))- minznpred)/(maxznpred - minznpred)
 predznindex.save(predzn36index)
 
 #Export attribute table
-predzn36_land = arcpy.sa.Con(Raster(NLCDreclass) != 11, Raster(predzn36))
+predzn36_land = arcpy.sa.Con((Raster(NLCDreclass) != 11) & (Raster(PSdissolveras) == 1), Raster(predzn36))
 predzn36_land.save(predzn36 + 'land')
 arcpy.CopyRows_management(predzn36 + 'land', out_table = os.path.join(predgdb, 'predzn36_tab'))
 
@@ -116,7 +130,7 @@ predcuindex = 100*(Float(Raster(predcu19))- mincupred)/(maxcupred - mincupred)
 predcuindex.save(predcu19index)
 
 #Export attribute table
-predcu_land = arcpy.sa.Con(Raster(NLCDreclass) != 11, Raster(predcu19))
+predcu_land = arcpy.sa.Con((Raster(NLCDreclass) != 11) & (Raster(PSdissolveras) == 1), Raster(predcu19))
 predcu_land.save(predcu19 + 'land')
 arcpy.CopyRows_management(predcu19 + 'land', out_table = os.path.join(predgdb, 'predcu_tab'))
 
@@ -145,11 +159,21 @@ print('Saving Pollution index predictions...')
 predpi.save(predpi30)
 
 #Export attribute table
-predpi_land = arcpy.sa.Con(Raster(NLCDreclass) != 11, Raster(predpi30))
+predpi_land = arcpy.sa.Con((Raster(NLCDreclass) != 11) & (Raster(PSdissolveras) == 1), Raster(predpi30))
 predpi_land.save(predpi30 + 'land')
 arcpy.CopyRows_management(predpi30 + 'land', out_table = os.path.join(predgdb, 'predpi_tab'))
 
-XRFsites = os.path.join(pollutgdb, 'XRFsites_aea')
+#Produce boolean vector showing 1 - land pixels with Cu or Zn beyond background levels and 0 - pixels at background level
+predallbool_land = arcpy.sa.Con((Raster(predcu19index)>0) | (Raster(predzn36index)>0), 1, 0)
+predallbool_land.save(os.path.join(predgdb, 'predcuznbool_land'))
+
+#Extract results to check that they match R outputs
+XRFsites = os.path.join(pollutgdb, "XRFsites_aeasel")
 sitescheck = os.path.join(predgdb,'sitescheck')
 arcpy.CopyFeatures_management(XRFsites, sitescheck)
 arcpy.sa.ExtractMultiValuesToPoints(sitescheck, [predzn36, predcu19, predpi30], bilinear_interpolate_values='NONE')
+
+#Get residuals
+arcpy.MakeFeatureLayer_management(XRFsites, 'sites')
+arcpy.AddJoin_management('sites', 'SiteIDPair', pollutfieldclean_cast, 'SiteIDPair')
+arcpy.CopyFeatures_management('sites', os.path.join(rootdir, 'results//PSpredictions.gdb/XRFsites_aeasel_resid'))
