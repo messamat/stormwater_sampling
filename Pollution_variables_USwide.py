@@ -725,7 +725,8 @@ heatlist = Iter_ListRaster([pollutgdb, transitgdb], 'heat*') + glob.glob(os.path
 
 #Project
 arcpy.Project_management(XRFsites, XRFsites_aea, cs_ref)
-treeselSQL = "Include IN ( 'Y' , ' ' ) AND (NOT Date = date '2019-04-21 00:00:00') AND (NOT SiteIDPair IN ('52A', '7A'))"
+treeselSQL = "Include IN ( 'Y' , ' ' ) AND (NOT Date = date '2019-04-21 00:00:00') AND (NOT SiteIDPair IN ('52A', '7A'," \
+             "'114A' , '114B'))"
 arcpy.MakeFeatureLayer_management(XRFsites_aea, 'sitesaea_lyr', where_clause = treeselSQL)
 arcpy.CopyFeatures_management('sitesaea_lyr', XRFsites_aeasel)
 
