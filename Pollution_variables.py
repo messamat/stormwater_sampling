@@ -42,6 +42,7 @@ trees = os.path.join(rootdir, 'data/CitySeattle_20180601/Trees/Trees.shp')
 zoning = os.path.join(rootdir, 'data/CitySeattle_20180626/City_of_Seattle_Zoning/WGS84/City_of_Seattle_Zoning.shp')
 censustract = os.path.join(rootdir, 'data/TIGER2017/Profile-County_Tract/Profile-County_Tract.gdb/Tract_2010Census_DP1')
 heat_bing = os.path.join(rootdir, 'results/bing/bingmean1806_Seattle_heat.tif')
+NLCD = os.path.join(rootdir, 'data', 'NLCD_2016_Land_Cover_L48_20190424.img')
 NLCD_reclass = os.path.join(rootdir, 'results/LU.gdb/NLCD_reclass_final') #Based on 2011 data
 NLCD_imp = os.path.join(rootdir, 'data/NLCD_2016_Impervious_L48_20190405.img') #Based on 2016 dara
 PSwatershed = os.path.join(rootdir, 'results/PSwtshd_dissolve.shp')
@@ -97,6 +98,7 @@ OSMWSDOT_datajoin = os.path.join(gdb, 'OSM_WSDOT_joinstats')
 roadstraffic = 'Seattle_roadstraffic'
 roadstraffic_avg =roadstraffic+'_AADT'
 NLCD_reclass_PS = os.path.join(rootdir, 'results/NLCD_reclass_final_PS.tif')
+NLCD_PS = os.path.join(rootdir, 'results/nlcd_ps.tif')
 NLCD_imp_PS = os.path.join(rootdir, 'results/nlcd_imp_ps')
 OSMSeattle = os.path.join(PSgdb, 'PSwtshd_OSMroads_Seattle')
 OSMSeattle_datajoin = os.path.join(PSgdb, 'OSMSeattle_datajoin')
@@ -125,6 +127,7 @@ trees_aea = os.path.join(gdb, 'trees_aea')
 #Export NLCD data to Puget Sound scale
 arcpy.env.snapRaster = NLCD_imp
 arcpy.Clip_management(in_raster=NLCD_reclass, rectangle=PSwatershed, out_raster=NLCD_reclass_PS)
+arcpy.Clip_management(in_raster=NLCD, rectangle=PSwatershed, out_raster=NLCD_PS)
 #Export NLCD impervious data
 arcpy.Clip_management(in_raster=NLCD_imp, rectangle=PSwatershed, out_raster=NLCD_imp_PS)
 #Compute focal stats
