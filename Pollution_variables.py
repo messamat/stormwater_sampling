@@ -31,7 +31,7 @@ arcpy.env.overwriteOutput=True
 arcpy.env.qualifiedFieldNames = False
 
 #Set up paths
-rootdir = 'D:/Mathis/ICSL/stormwater'
+rootdir = os.path.dirname(os.path.abspath(__file__)).split('\\src')[0]
 
 seattleroads = os.path.join(rootdir, 'data/CitySeattle_20180601/Seattle_Streets/Seattle_Streets.shp')
 kingroads = os.path.join(rootdir, 'data/King_201806/Metro_Transportation_Network_TNET_in_King_County_for_Car_Mode__trans_network_car_line/'

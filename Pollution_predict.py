@@ -23,7 +23,7 @@ arcpy.env.qualifiedFieldNames = False
 arcpy.env.cellSize = "MINOF"
 
 #Set up paths
-rootdir = 'D:/Mathis/ICSL/stormwater'
+rootdir = os.path.dirname(os.path.abspath(__file__)).split('\\src')[0]
 moddir = os.path.join(rootdir, 'results/data_modeling')
 Binggdb = os.path.join(rootdir, 'results/bing/postprocess.gdb')
 transitgdb = os.path.join(rootdir, 'results/transit.gdb')
